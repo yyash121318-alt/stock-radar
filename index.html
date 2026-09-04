@@ -1329,5 +1329,203 @@ render();
   }
 })();
 </script>
+  <style>
+/* ===== 手机端体验微调（第二批） ===== */
+@media (max-width:860px){
+  .topbar{gap:6px;padding:6px 8px;}
+  .brand{font-size:13px;}
+  .tab{padding:5px 10px;font-size:12px;}
+  .topbar .btn{padding:5px 9px;font-size:11px;border-radius:6px;}
+  .status{font-size:11px;padding:3px 8px;}
+  .sectors{padding:6px;}
+  .sec{padding:8px 12px;}
+  .stk{padding:11px 12px;}
+  .stk .del{opacity:.55;font-size:18px;padding:2px 8px;}  /* 手机无hover，删除按钮常显 */
+  .stocklist{max-height:27vh;}
+  .detail-head{padding:10px;}
+  .dh-stats{gap:5px 8px;}
+  .dh-stat{font-size:11px;}
+  .dh-price .px{font-size:23px;}
+  .chart-wrap{height:52vh;}
+  canvas{min-height:200px;}
+  .alert-list{max-height:30vh;}
+  .alert-item{padding:12px;}
+  .rank-row{padding:11px 12px;font-size:13px;}
+  .ov-item{padding:12px;font-size:13px;}
+  .chart-tab{padding:8px 16px;font-size:13px;}
+  .rv-card h4{padding:12px 14px;}
+}
+</style>
+<script>
+/* ===== 外围分时/K线修复 + 长K线（近2年）+ 图表根数自适应 ===== */
+(function(){
+  function tc(code){return code[0]==='6'?'sh'+code:'sz'+code;}
+  function getJ(url){return fetch(url).then(function(r){return r.json();}).catch(function(){return null;});}
+
+  function parseDaily(j,k){
+    try{
+      var d=j&&j.data&&j.data[k];if(!d)return null;
+      var arr=d.qfqday||d.day||d.usday||d.hkday;
+      if(!Array.isArray(arr)||!arr.length)return null;
+      var out=arr.map(function(x){return {o:+x[1],c:+x[2],h:+x[3],l:+x[4],v:+x[5]||0};})
+                 .filter(function(b){return b.c>0&&b.o>0;});
+      return out.length?out:null;
+    }catch(e){return null;}
+  }
+  function parseMinute(j,k){
+    try{
+      var d=j&&j.data&&j.data[k];
+      var arr=d&&d.data&&d.data.data;
+      if(!Array.isArray(arr)||arr.length<30)return null;
+      return arr.map(function(l){return +(l.split(' ')[1]);});
+    }catch(e){return null;}
+  }
+  function dailyURLs(k){
+    var fq='https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param='+k+',day,,,400,qfq';
+    var us='https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param='+k+',day,,,400,qfq';
+    var hk='https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param='+k+',day,,,400,qfq';
+    var kl='https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param='+k+',day,,,400,';
+    if(k.indexOf('us')===0)return [us,kl,fq,hk];
+    if(k.indexOf('hk')===0)return [hk,kl,fq,us];
+    return [fq,us,hk,kl];
+  }
+  function minuteURLs(k){
+    return [
+      'https://web.ifzq.gtimg.cn/appstock/app/minute/query?code='+k,
+      'https://web.ifzq.gtimg.cn/appstock/app/usminute/query?code='+k
+    ];
+  }
+  function tryList(urls,parser){
+    return urls.reduce(function(p,u){
+      return p.then(function(v){return v||getJ(u).then(function(j){return parser(j);});});
+    },Promise.resolve(null));
+  }
+
+  /* 选中股票后自动补长K线 + 真实分时 */
+  function ensureLong(){
+    var id=selectedCode,q=quotes[id];
+    if(!q||q._longDone)return;
+    q._longDone=true;
+    var k=/^\d{6}$/.test(id)?tc(id):id;
+
+    tryList(dailyURLs(k),function(j){return parseDaily(j,k);}).then(function(bars){
+      if(bars&&bars.length>150){
+        q.daily=bars;
+        if(bars.length>1&&!q.prevClose)q.prevClose=bars[bars.length-2].c;
+        var last=bars[bars.length-1];
+        last.c=q.price;last.h=Math.max(last.h,q.price);last.l=Math.min(last.l,q.price);
+        drawChart();
+      }
+    });
+    tryList(minuteURLs(k),function(j){return parseMinute(j,k);}).then(function(pts){
+      if(pts&&pts.length>60){
+        q.minute=pts;
+        q.minute[pts.length-1]=q.price;
+        if(chartMode==='min')drawChart();
+      }
+    });
+  }
+  var prevDC=window.drawChart;
+  window.drawChart=function(){
+    prevDC.apply(this,arguments);
+    try{ensureLong();}catch(e){}
+  };
+
+  /* ---- 重写分时图：外围标的用通用时间轴 ---- */
+  window.drawMin=function(q,W,H){
+    var padL=8,padR=64,padT=14,padB=20;
+    var cw=W-padL-padR,ch=H-padT-padB;
+    var pts=q.minute,prev=q.prevClose;
+    var vals=pts.concat([prev]);
+    var mx=Math.max.apply(null,vals),mn=Math.min.apply(null,vals),rng=mx-mn||1;
+    var y=function(v){return padT+(mx-v)/rng*ch;};
+    var x=function(i){return padL+i/(pts.length-1)*cw;};
+    var isExt=!/^\d{6}$/.test(selectedCode);
+    var labels=isExt?['开盘','','盘中','','收盘']:['09:30','10:30','11:30','14:00','15:00'];
+
+    ctx.strokeStyle='#2a313c';ctx.fillStyle='#8b949e';ctx.font='10px sans-serif';ctx.textBaseline='middle';
+    for(var i=0;i<=4;i++){
+      var yy=padT+ch*i/4;
+      ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(W-padR,yy);ctx.stroke();
+      ctx.fillText((mx-rng*i/4).toFixed(2),W-padR+4,yy);
+    }
+    ctx.setLineDash([4,3]);ctx.strokeStyle='#8b949e';
+    ctx.beginPath();ctx.moveTo(padL,y(prev));ctx.lineTo(W-padR,y(prev));ctx.stroke();ctx.setLineDash([]);
+
+    var avg=pts.map(function(_,i){return pts.slice(0,i+1).reduce(function(a,b){return a+b;},0)/(i+1);});
+    ctx.strokeStyle='#e6b800';ctx.lineWidth=1;ctx.beginPath();
+    avg.forEach(function(v,i){i?ctx.lineTo(x(i),y(v)):ctx.moveTo(x(i),y(v));});ctx.stroke();
+
+    var up=q.price>=prev,col=up?'#f5455c':'#22c55e';
+    ctx.beginPath();pts.forEach(function(v,i){i?ctx.lineTo(x(i),y(v)):ctx.moveTo(x(i),y(v));});
+    ctx.strokeStyle=col;ctx.lineWidth=1.6;ctx.stroke();
+    ctx.lineTo(x(pts.length-1),padT+ch);ctx.lineTo(padL,padT+ch);ctx.closePath();
+    ctx.fillStyle=up?'rgba(245,69,92,.12)':'rgba(34,197,94,.12)';ctx.fill();
+
+    ctx.fillStyle='#8b949e';
+    labels.forEach(function(t,i){ctx.fillText(t,padL+cw*i/4-(t.length>2?14:12),H-padB+8);});
+
+    ctx.fillStyle=col;ctx.fillRect(W-padR,y(q.price)-8,padR,16);
+    ctx.fillStyle='#fff';ctx.fillText(q.price.toFixed(2),W-padR+4,y(q.price));
+    ctx.fillStyle='#e6b800';ctx.fillText('— 均价',padL+4,padT-2);
+    ctx.fillStyle=col;ctx.fillText('— 价格',padL+50,padT-2);
+  };
+
+  /* ---- 重写日K图：显示140根(桌面)/90根(手机)，日期标签自适应 ---- */
+  window.drawK=function(q,W,H){
+    var bars=q.daily;
+    var padL=8,padR=64,padT=16,padB=34;
+    var cw=W-padL-padR,priceH=(H-padT-padB)*0.72,volH=(H-padT-padB)*0.28;
+    var show=window.innerWidth<=860?90:140;
+    var data=bars.slice(-show);
+    var mx=Math.max.apply(null,data.map(function(b){return b.h;}));
+    var mn=Math.min.apply(null,data.map(function(b){return b.l;}));
+    var rng=mx-mn||1;
+    var y=function(v){return padT+(mx-v)/rng*priceH;};
+    var bw=cw/show*0.7;
+    var bx=function(i){return padL+cw*(i+0.5)/show;};
+    var maxV=Math.max.apply(null,data.map(function(b){return b.v;}))||1;
+
+    ctx.strokeStyle='#2a313c';ctx.fillStyle='#8b949e';ctx.font='10px sans-serif';ctx.textBaseline='middle';
+    for(var i=0;i<=4;i++){
+      var yy=padT+priceH*i/4;
+      ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(W-padR,yy);ctx.stroke();
+      ctx.fillText((mx-rng*i/4).toFixed(2),W-padR+4,yy);
+    }
+    data.forEach(function(b,i){
+      ctx.fillStyle=b.c>=b.o?'rgba(245,69,92,.6)':'rgba(34,197,94,.6)';
+      var vh=b.v/maxV*volH;
+      ctx.fillRect(bx(i)-bw/2,padT+priceH+volH-vh,bw,vh);
+    });
+    data.forEach(function(b,i){
+      var upC=b.c>=b.o,col=upC?'#f5455c':'#22c55e';
+      ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(bx(i),y(b.h));ctx.lineTo(bx(i),y(b.l));ctx.stroke();
+      var top=y(Math.max(b.o,b.c)),hgt=Math.max(1,Math.abs(y(b.o)-y(b.c)));
+      ctx.fillRect(bx(i)-bw/2,top,bw,hgt);
+    });
+    [[5,'#e6b800'],[10,'#3b82f6'],[20,'#c084fc']].forEach(function(mn2){
+      var n=mn2[0],col=mn2[1];
+      ctx.strokeStyle=col;ctx.lineWidth=1;ctx.beginPath();var started=false;
+      data.forEach(function(_,i){
+        var real=bars.length-show+i;
+        var v=ma(n,bars,real);
+        if(v==null)return;
+        var X=bx(i),Y=y(v);
+        started?ctx.lineTo(X,Y):ctx.moveTo(X,Y);started=true;
+      });
+      ctx.stroke();
+      ctx.fillStyle=col;ctx.fillText('MA'+n,padL+(n===5?4:n===10?52:100),padT-4);
+    });
+    ctx.fillStyle='#8b949e';
+    [0,Math.round(show*0.25),Math.round(show*0.5),Math.round(show*0.75),show-1].forEach(function(i){
+      if(data[i]){
+        var d=new Date();d.setDate(d.getDate()-(show-1-i));
+        ctx.fillText((d.getMonth()+1)+'/'+d.getDate(),bx(i)-14,H-12);
+      }
+    });
+  };
+})();
+</script>
 </body>
 </html>
