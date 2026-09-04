@@ -1570,5 +1570,125 @@ render();
   });
 })();
 </script>
+  <script>
+/* ===== 美股分时修复（改用1分钟K线拼分时）+ 财经快讯舆情 ===== */
+(function(){
+  function getJ(u){return fetch(u).then(function(r){return r.json();}).catch(function(){return null;});}
+  function tc(code){return code[0]==='6'?'sh'+code:'sz'+code;}
+
+  /* ---------- 用 m1 分钟K线拼真实分时（A股/美股/港股/指数通用） ---------- */
+  function fetchM1(k){
+    var u='https://web.ifzq.gtimg.cn/appstock/app/kline/mkline?param='+k+',m1,,400';
+    return getJ(u).then(function(j){
+      try{
+        var d=j&&j.data&&j.data[k];
+        var arr=d&&d.m1;
+        if(!Array.isArray(arr)||arr.length<20)return null;
+        var lastDay='';
+        arr.forEach(function(row){
+          var day=String(row[0]).split(/[ \/]/)[0];
+          if(day>lastDay)lastDay=day;
+        });
+        var pts=[];
+        arr.forEach(function(row){
+          if(String(row[0]).indexOf(lastDay)===0){
+            var c=parseFloat(row[2]);
+            if(c>0)pts.push(c);
+          }
+        });
+        return pts.length>=20?pts:null;
+      }catch(e){return null;}
+    });
+  }
+  var prevDC=window.drawChart;
+  window.drawChart=function(){
+    prevDC.apply(this,arguments);
+    var id=selectedCode,q=quotes[id];
+    if(!q)return;
+    var k=/^\d{6}$/.test(id)?tc(id):id;
+    var now=Date.now();
+    /* 分时模式下，每5分钟拉一次最新分钟数据 */
+    if(chartMode==='min'&&(!q._m1T||now-q._m1T>300000)){
+      q._m1T=now;
+      fetchM1(k).then(function(pts){
+        if(pts&&pts.length>=20&&selectedCode===id){
+          q.minute=pts;
+          q.minute[pts.length-1]=q.price;
+          if(chartMode==='min')drawChart();
+        }
+      });
+    }
+  };
+
+  /* ---------- 7×24 财经快讯（东方财富 JSONP，免Key） ---------- */
+  var newsCache=[];
+  function esc(s){
+    return String(s).replace(/[&<>"]/g,function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+    });
+  }
+  function loadNews(){
+    var cb='__nw'+Date.now()+Math.floor(Math.random()*1e6);
+    var s=document.createElement('script');
+    function cleanup(){s.remove();try{delete window[cb];}catch(e){window[cb]=undefined;}}
+    window[cb]=function(j){
+      try{
+        var d=j&&j.data;
+        var list=(d&&(d.fastNewsList||d.list||d.articleList||d.newsList))||[];
+        var items=list.map(function(it){
+          return {
+            title:it.title||it.Art_Title||it.digest||'',
+            time:it.showtime||it.Art_ShowTime||it.showTime||it.time||'',
+            url:it.url||it.Art_UrlWap||it.Art_OriginUrl||''
+          };
+        }).filter(function(x){return x.title;});
+        if(items.length){
+          var first=items[0].title;
+          newsCache=items.slice(0,30);
+          if(first!==window.__lastNews){
+            window.__lastNews=first;
+            if(/(突发|降息|加息|央行|关税|涨停潮|熔断|暴涨|暴跌|非农|CPI|利率|制裁)/.test(first)){
+              toast('📰 快讯：'+first.slice(0,28)+(first.length>28?'…':''),true);
+            }
+          }
+          renderNewsInReview();
+        }
+      }catch(e){}
+      cleanup();
+    };
+    s.onerror=function(){cleanup();};
+    s.src='https://np-weblist.eastmoney.com/comm/web/getFastNewsList?client=web&biz=web_724&fastColumn=102&sortEnd=&pageSize=30&req_trace='+Date.now()+'&cb='+cb;
+    document.head.appendChild(s);
+    setTimeout(cleanup,10000);
+  }
+  function renderNewsInReview(){
+    var rv=document.getElementById('reviewView');
+    if(!rv||!rv.classList.contains('show'))return;
+    var box=document.getElementById('newsCard');
+    if(!box){
+      box=document.createElement('div');
+      box.id='newsCard';box.className='rv-card';box.style.gridColumn='1/-1';
+      rv.appendChild(box);
+    }
+    box.innerHTML='<h4>📰 7×24 财经快讯 · 舆情 <span style="color:var(--muted);font-weight:400;font-size:11px">（东方财富 · 60秒自动刷新）</span></h4>'
+      +(newsCache.length
+        ? '<div style="max-height:320px;overflow-y:auto">'+newsCache.map(function(n){
+            var href=n.url?('href="'+(/^http/.test(n.url)?n.url:'https://finance.eastmoney.com/')+'" target="_blank"'):'';
+            return '<div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;line-height:1.7">'
+              +'<span style="color:var(--muted);margin-right:8px">'+esc(String(n.time).slice(5,16))+'</span>'
+              +'<a '+href+' style="color:var(--text);text-decoration:none">'+esc(n.title)+'</a></div>';
+          }).join('')+'</div>'
+        : '<div class="empty">快讯加载中…</div>');
+  }
+  var prevRR=window.renderReview;
+  window.renderReview=function(){
+    prevRR.apply(this,arguments);
+    renderNewsInReview();
+  };
+
+  setTimeout(loadNews,4000);
+  setInterval(loadNews,60000);
+})();
+</script>
 </body>
 </html>
