@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -977,6 +977,55 @@ render();
   renderRadar();
   setTimeout(loadFunds,2000);
   setInterval(loadFunds,60000);
+})();
+</script>
+  <script>
+/* ===== 外围市场实时追踪（腾讯海外行情：美股指数/港股/日经/韩股/半导体ETF） ===== */
+(function(){
+  /* name 必须和复盘页外围列表里的名字一致；tc 是腾讯行情代码 */
+  var OS=[
+    {name:'纳斯达克',   tc:'usIXIC'},
+    {name:'标普500',    tc:'usINX'},
+    {name:'道琼斯',     tc:'usDJI'},
+    {name:'恒生科技',   tc:'hkHSTECH'},
+    {name:'日经225',    tc:'jpNI225'},
+    {name:'费城半导体', tc:'usSOXX'},   /* 费半指数无公开直连，用美股半导体ETF SOXX 实时替代 */
+    {name:'三星电子',   tc:'kr005930'},
+    {name:'SK海力士',   tc:'kr000660'}
+  ];
+
+  function fetchOverseas(){
+    OS.forEach(function(o){ try{window['v_'+o.tc]=undefined;}catch(e){} });
+    var s=document.createElement('script');
+    s.charset='GBK';
+    s.src='https://qt.gtimg.cn/q='+OS.map(function(o){return o.tc;}).join(',');
+    s.onload=function(){
+      var hit=0;
+      OS.forEach(function(o){
+        var raw=window['v_'+o.tc];
+        if(!raw)return;
+        var a=raw.split('~');
+        var price=parseFloat(a[3]);
+        var prev=parseFloat(a[4]);
+        if(!price||!prev)return;
+        var p=(price-prev)/prev*100;
+        var target=OVERSEAS.find(function(x){return x.name===o.name;});
+        if(target){ target.v=price; target.p=p; hit++; }
+        if(o.name==='费城半导体'&&target){ target.name='费城半导体(SOXX)'; }
+      });
+      /* 如果复盘页正开着，直接刷新外围数字 */
+      var rv=document.getElementById('reviewView');
+      if(hit>0&&rv&&rv.classList.contains('show')&&typeof renderReview==='function'){
+        renderReview();
+      }
+      s.remove();
+    };
+    s.onerror=function(){ s.remove(); };
+    document.head.appendChild(s);
+  }
+
+  setTimeout(fetchOverseas,3000);
+  setInterval(fetchOverseas,30000);
 })();
 </script>
 </body>
