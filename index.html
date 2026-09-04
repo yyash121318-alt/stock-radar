@@ -721,5 +721,263 @@ render();
   setInterval(refresh,30000);
 })();
 </script>
+  <script>
+/* ===== 资金雷达 + 异动雷达 + 智能复盘（接在腾讯行情脚本之后） ===== */
+(function(){
+  var events=[];
+  var soundOn=false, notifOn=false, audioCtx=null;
+
+  /* ---------- 工具 ---------- */
+  function secid(code){ return (code[0]==='6')?('1.'+code):('0.'+code); }
+  function fAmt(v){ return Math.abs(v)>=1e8 ? (v/1e8).toFixed(2)+'亿' : (v/1e4).toFixed(0)+'万'; }
+  function bjNow(){
+    var n=new Date();
+    return new Date(n.getTime()+n.getTimezoneOffset()*60000+8*3600000);
+  }
+  function sessionProgress(){
+    var t=bjNow(),d=t.getDay(),m=t.getHours()*60+t.getMinutes();
+    if(d===0||d===6)return 1;
+    if(m<570)return 0.05;
+    if(m<=690)return (m-570)/240;
+    if(m<780)return 120/240;
+    if(m<=900)return (m-780+120)/240;
+    return 1;
+  }
+
+  /* ---------- 声音 / 通知 ---------- */
+  function beep(sev){
+    if(!soundOn)return;
+    try{
+      audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+      var o=audioCtx.createOscillator(),g=audioCtx.createGain();
+      o.connect(g);g.connect(audioCtx.destination);
+      o.frequency.value=sev?920:620;o.type='sine';
+      g.gain.setValueAtTime(0.0001,audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.18,audioCtx.currentTime+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.4);
+      o.start();o.stop(audioCtx.currentTime+0.45);
+    }catch(e){}
+  }
+  function notify(title,body){
+    if(!notifOn||!('Notification'in window)||Notification.permission!=='granted')return;
+    try{ new Notification(title,{body:body}); }catch(e){}
+  }
+
+  /* ---------- 真实主力资金（东方财富 JSONP，免Key） ---------- */
+  function jsonp(url){
+    return new Promise(function(res){
+      var cb='__em'+Date.now()+Math.floor(Math.random()*1e6);
+      var s=document.createElement('script');
+      window[cb]=function(d){ res(d); try{delete window[cb];}catch(e){window[cb]=undefined;} s.remove(); };
+      s.onerror=function(){ res(null); s.remove(); };
+      s.src=url+(url.indexOf('?')>=0?'&':'?')+'cb='+cb;
+      document.head.appendChild(s);
+      setTimeout(function(){ res(null); },9000);
+    });
+  }
+  function loadFunds(){
+    var secs=STOCKS.map(function(s){return secid(s.code);}).join(',');
+    var url='https://push2.eastmoney.com/api/qt/ulist.np/get'
+      +'?ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2'
+      +'&secids='+secs
+      +'&fields=f12,f14,f2,f3,f62,f184';
+    jsonp(url).then(function(j){
+      var d=j&&j.data&&j.data.diff;
+      if(!d||!d.length)return;
+      d.forEach(function(r){
+        var q=quotes[r.f12];
+        if(!q)return;
+        if(typeof r.f62==='number'&&isFinite(r.f62)) q.inflow=r.f62;
+        if(typeof r.f184==='number'&&isFinite(r.f184)) q._fundRatio=r.f184;
+      });
+    }).catch(function(){});
+  }
+
+  /* ---------- 雷达事件 ---------- */
+  function pushEvent(stock,type,title,val,text,severe){
+    var now=Date.now();
+    stock._cd=stock._cd||{};
+    var cd=(type==='volume')?1800:(type==='fund'?900:600);
+    if(stock._cd[type]&&(now-stock._cd[type])/1000<cd)return;
+    stock._cd[type]=now;
+    events.unshift({name:stock.name,code:stock.code,type:type,title:title,text:text,
+      t:new Date().toLocaleTimeString('zh-CN',{hour12:false}),sev:!!severe});
+    if(events.length>40)events.pop();
+    beep(severe);
+    notify('科技雷达 · '+stock.name,text);
+    renderRadar();
+  }
+
+  /* 接管原30秒±2%预警 */
+  window.pushAlert=function(stock,move){
+    pushEvent(stock,'price',move>0?'急拉':'急跌',move*100,
+      '30秒'+(move>0?'拉升':'跳水')+' '+(move*100).toFixed(2)+'%',Math.abs(move)>=0.02);
+    toast(stock.name+(move>0?' 拉升 ':' 跳水 ')+(move*100).toFixed(2)+'%',move>0);
+  };
+
+  /* ---------- 每3秒扫描异动 ---------- */
+  function scan(){
+    var now=Date.now();
+    STOCKS.forEach(function(s){
+      var q=quotes[s.code]; if(!q)return;
+      var price=q.price;
+      q._h=q._h||[];
+      q._h.push({t:now,p:price});
+      while(q._h.length>2&&q._h[0].t<now-600000)q._h.shift();
+
+      /* 1分钟涨速 */
+      var ref=null;
+      for(var i=0;i<q._h.length;i++){ if(now-q._h[i].t>=55000)ref=q._h[i]; else break; }
+      if(ref){
+        var m=(price-ref.p)/ref.p;
+        if(Math.abs(m)>=0.012)
+          pushEvent(s,'speed',m>0?'急拉':'急跌',m*100,'1分钟涨速 '+(m*100).toFixed(2)+'%',Math.abs(m)>=0.02);
+      }
+
+      /* 涨跌停识别（创业/科创20%，主板10%） */
+      var pc=(price-q.prevClose)/q.prevClose*100;
+      var lim=(s.code[0]==='3'||s.code.indexOf('688')===0)?20:10;
+      if(pc>=lim-1) pushEvent(s,'limit','冲击涨停',pc,'涨幅 '+pc.toFixed(2)+'%，逼近涨停',true);
+      else if(pc<=-(lim-1)) pushEvent(s,'limit','逼近跌停',pc,'跌幅 '+pc.toFixed(2)+'%，注意风险',true);
+
+      /* 放量（量比，按交易进度折算） */
+      var bars=q.daily||[];
+      if(bars.length>=6){
+        var sum=0;
+        for(var i=bars.length-7;i<bars.length-1;i++)sum+=bars[i].v;
+        var avg5=sum/5, prog=sessionProgress();
+        var ratio=prog>0.1 ? q.vol/(avg5*prog) : q.vol/avg5;
+        if(ratio>=2.5&&pc>0) pushEvent(s,'volume','放量上攻',ratio,'量比 '+ratio.toFixed(1)+' · 涨 '+pc.toFixed(2)+'%',ratio>=4);
+        else if(ratio>=2.5&&pc<0) pushEvent(s,'volume','放量下杀',ratio,'量比 '+ratio.toFixed(1)+' · 跌 '+pc.toFixed(2)+'%',false);
+      }
+
+      /* 主力资金异动 */
+      if(typeof q.inflow==='number'&&typeof q._fundRatio==='number'&&isFinite(q._fundRatio)){
+        if(q._fundRatio>=10) pushEvent(s,'fund','主力抢筹',q._fundRatio,
+          '主力净占比 '+q._fundRatio.toFixed(1)+'% · 净流入 '+fAmt(q.inflow),true);
+        else if(q._fundRatio<=-10) pushEvent(s,'fund','主力出逃',q._fundRatio,
+          '主力净占比 '+q._fundRatio.toFixed(1)+'% · 净流出 '+fAmt(-q.inflow),true);
+      }
+    });
+  }
+
+  /* ---------- 雷达列表渲染 ---------- */
+  var ICON={speed:'⚡',price:'🚀',volume:'📊',fund:'💰',limit:'🔴'};
+  function isUp(ev){ return ev.title.indexOf('跌')<0&&ev.title.indexOf('出逃')<0&&ev.title.indexOf('下杀')<0; }
+  function renderRadar(){
+    var el=document.getElementById('alertList');
+    if(!el)return;
+    if(!events.length){
+      el.innerHTML='<div class="empty">雷达运行中…<br><br>实时监测：<br>急拉急跌 / 放量异动<br>主力抢筹出逃 / 涨跌停<br><br>触发后在此提示并弹窗</div>';
+      return;
+    }
+    el.innerHTML=events.map(function(ev){
+      var up=isUp(ev);
+      return '<div class="alert-item" style="'+(ev.sev?'border-left:3px solid '+(up?'var(--up)':'var(--down)')+';':'')+'">'
+        +'<div class="at"><span style="font-weight:600" class="'+(up?'up':'down')+'">'+ICON[ev.type]+' '+ev.name+' · '+ev.title+'</span>'
+        +'<span class="t">'+ev.t+'</span></div>'
+        +'<div class="d">'+ev.text+' <span style="color:var(--muted)">· '+ev.code+'</span></div></div>';
+    }).join('');
+  }
+
+  /* 钩住渲染：原渲染完成后跑扫描+雷达 */
+  var prevRender=window.render;
+  window.render=function(){
+    prevRender.apply(this,arguments);
+    try{ scan(); }catch(e){}
+    renderRadar();
+  };
+
+  /* ---------- 智能复盘（覆盖原复盘页，资金为真实数据） ---------- */
+  window.renderReview=function(){
+    var arr=STOCKS.filter(function(s){return watchlist.includes(s.code);})
+                 .map(function(s){return {s:s,q:quotes[s.code]};});
+    var upN=arr.filter(function(x){return pct(x.q)>0.05;}).length;
+    var dnN=arr.filter(function(x){return pct(x.q)<-0.05;}).length;
+    var flatN=arr.length-upN-dnN;
+    var avg=arr.reduce(function(a,x){return a+pct(x.q);},0)/arr.length;
+    var byPct=arr.slice().sort(function(a,b){return pct(b.q)-pct(a.q);});
+    var byVol=arr.slice().sort(function(a,b){return b.q.vol-a.q.vol;});
+    var byFund=arr.slice().sort(function(a,b){return b.q.inflow-a.q.inflow;});
+
+    var heat=SECTORS.map(function(sec){
+      var list=arr.filter(function(x){return x.s.sector===sec;});
+      if(!list.length)return null;
+      return {sec:sec,avg:list.reduce(function(a,x){return a+pct(x.q);},0)/list.length,n:list.length};
+    }).filter(Boolean).sort(function(a,b){return b.avg-a.avg;});
+    var heatMax=Math.max.apply(null,heat.map(function(h){return Math.abs(h.avg);}).concat([1]));
+
+    function rank(rows,fn,unit){
+      return rows.slice(0,8).map(function(x,i){
+        var v=fn(x);
+        return '<div class="rank-row"><span class="no">'+(i+1)+'</span><span class="nm">'+x.s.name
+          +'<span class="cd">'+x.s.code+'</span></span><span class="v '+(v>=0?'up':'down')+'">'+unit(v)+'</span></div>';
+      }).join('');
+    }
+
+    var summary=
+      '今日自选池 <b style="color:var(--text)">'+arr.length+'</b> 只标的中，上涨 <b class="up">'+upN+'</b> 只、下跌 <b class="down">'+dnN+'</b> 只、平盘 '+flatN+' 只，平均涨跌幅 <b class="'+(avg>=0?'up':'down')+'">'+(avg>=0?'+':'')+avg.toFixed(2)+'%</b>。'
+      +'板块方面，<b style="color:var(--text)">'+heat[0].sec+'</b> 表现最强（均涨 '+heat[0].avg.toFixed(2)+'%）。'
+      +'资金面上，<b style="color:var(--text)">'+byFund[0].s.name+'</b> 主力净流入最多（'+fAmt(byFund[0].q.inflow)+'），<b style="color:var(--text)">'+byFund[byFund.length-1].s.name+'</b> 主力净流出最多（'+fAmt(-byFund[byFund.length-1].q.inflow)+'）。'
+      +'领涨股为 <b style="color:var(--text)">'+byPct[0].s.name+'</b>（'+(pct(byPct[0].q)>=0?'+':'')+pct(byPct[0].q).toFixed(2)+'%）。以上为数据自动归纳，不构成投资建议。';
+
+    document.getElementById('reviewView').innerHTML=
+      '<div class="rv-card" style="margin-bottom:14px"><h4>📝 智能复盘总结</h4><div class="disc" style="margin:0;border-radius:0;line-height:2">'+summary+'</div></div>'
+      +'<div class="rv-grid">'
+      +'<div class="rv-card"><h4>📈 涨幅榜 TOP8</h4>'+rank(byPct,function(x){return pct(x.q);},function(v){return (v>=0?'+':'')+v.toFixed(2)+'%';})+'</div>'
+      +'<div class="rv-card"><h4>📊 成交量榜 TOP8</h4>'+rank(byVol,function(x){return x.q.vol;},function(v){return v>=1e8?(v/1e8).toFixed(2)+'亿手':(v/1e4).toFixed(1)+'万手';})+'</div>'
+      +'<div class="rv-card"><h4>💰 主力资金净流入榜 TOP8（真实）</h4>'+rank(byFund,function(x){return x.q.inflow;},function(v){return fAmt(v);})+'</div>'
+      +'</div>'
+      +'<div class="rv-grid">'
+      +'<div class="rv-card"><h4>🔥 板块热度（平均涨幅）</h4>'
+      +heat.map(function(h){
+        return '<div class="heat-row"><div class="ht"><span>'+h.sec+' <span style="color:var(--muted)">('+h.n+'只)</span></span><span class="'+(h.avg>=0?'up':'down')+'">'+(h.avg>=0?'+':'')+h.avg.toFixed(2)+'%</span></div>'
+        +'<div class="heat-bar"><div class="heat-fill" style="width:'+(Math.abs(h.avg)/heatMax*100)+'%;background:'+(h.avg>=0?'var(--up)':'var(--down)')+'"></div></div></div>';
+      }).join('')
+      +'</div>'
+      +'<div class="rv-card"><h4>🌍 外围市场趋势</h4>'
+      +OVERSEAS.map(function(o){
+        return '<div class="ov-item"><span class="l">'+o.name+'</span><span class="v '+(o.p>=0?'up':'down')+'">'+o.v.toLocaleString()+'　'+(o.p>=0?'+':'')+o.p.toFixed(2)+'%</span></div>';
+      }).join('')
+      +'<div class="disc">外围关注：费城半导体指数影响A股半导体情绪；韩国 <b style="color:var(--text)">三星电子、SK海力士</b> 反映存储/AI硬件景气度，可作为存储板块（兆易创新、江波龙、佰维存储等）开盘参考。外围数据为参考值。</div>'
+      +'</div></div>'
+      +'<div class="disc">⚠️ 行情来自腾讯/东方财富公开接口，为免费快照数据，可能延迟；资金流向为盘口推算口径，与各平台统计可能存在差异。本工具仅用于复盘记录，<b style="color:var(--text)">不构成任何投资建议</b>。</div>';
+  };
+
+  /* ---------- 顶部开关按钮 ---------- */
+  function addBtn(txt,title,onClick){
+    var b=document.createElement('button');
+    b.className='btn';b.textContent=txt;b.title=title;
+    b.onclick=onClick;
+    var sim=document.getElementById('simBtn');
+    if(sim)sim.parentNode.insertBefore(b,sim);else document.querySelector('.topbar').appendChild(b);
+    return b;
+  }
+  var bSound=addBtn('🔊 声音:关','开关雷达提示音',function(){
+    soundOn=!soundOn; bSound.textContent='🔊 声音:'+(soundOn?'开':'关'); if(soundOn)beep(true);
+  });
+  var bNotif=addBtn('🔔 通知:关','开启浏览器桌面通知',function(){
+    if(!notifOn){
+      if(!('Notification'in window)){alert('当前浏览器不支持桌面通知');return;}
+      Notification.requestPermission().then(function(p){
+        notifOn=(p==='granted');
+        bNotif.textContent='🔔 通知:'+(notifOn?'开':'关');
+        if(notifOn)notify('科技雷达','已开启，异动时会弹出桌面通知');
+      });
+    }else{
+      notifOn=false;bNotif.textContent='🔔 通知:关';
+    }
+  });
+
+  /* 面板标题 */
+  var h3s=document.querySelectorAll('.panel h3');
+  h3s.forEach(function(h){ if(h.textContent.indexOf('行情警报')>=0)h.innerHTML='雷达预警 <span class="cnt">资金/异动</span>'; });
+
+  /* 启动 */
+  renderRadar();
+  setTimeout(loadFunds,2000);
+  setInterval(loadFunds,60000);
+})();
+</script>
 </body>
 </html>
