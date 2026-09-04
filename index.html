@@ -1154,5 +1154,180 @@ render();
   }
 })();
 </script>
+  <style>
+.rank-row,.ov-item,.alert-item{cursor:pointer}
+.rank-row:hover .nm,.ov-item:hover .l{color:var(--accent)}
+</style>
+<script>
+/* ===== 全站股票名跳转 + 刷新/倒计时合并按钮 ===== */
+(function(){
+  var EXT=[
+    {tc:'usIXIC',  name:'纳斯达克指数', key:'纳斯达克'},
+    {tc:'usINX',   name:'标普500指数',  key:'标普500'},
+    {tc:'usDJI',   name:'道琼斯指数',   key:'道琼斯'},
+    {tc:'hkHSTECH',name:'恒生科技指数', key:'恒生科技'},
+    {tc:'jpNI225', name:'日经225指数',  key:'日经225'},
+    {tc:'usSOXX',  name:'费城半导体(SOXX)', key:'费城半导体'},
+    {tc:'kr005930',name:'三星电子',     key:'三星电子'},
+    {tc:'kr000660',name:'SK海力士',     key:'SK海力士'}
+  ];
+
+  /* ---------- 腾讯快照（script注入，海内外通用） ---------- */
+  function batch(tcodes){
+    return new Promise(function(resolve){
+      tcodes.forEach(function(t){try{window['v_'+t]=undefined;}catch(e){}});
+      var s=document.createElement('script');s.charset='GBK';
+      s.src='https://qt.gtimg.cn/q='+tcodes.join(',');
+      s.onload=function(){
+        var out={};
+        tcodes.forEach(function(t){
+          var raw=window['v_'+t];if(!raw)return;
+          var a=raw.split('~');var price=parseFloat(a[3]);if(!price)return;
+          out[t]={price:price,prev:parseFloat(a[4])||price,open:parseFloat(a[5])||price,
+            high:parseFloat(a[33])||price,low:parseFloat(a[34])||price,
+            vol:parseFloat(a[6])||0,amt:(parseFloat(a[37])||0)*10000};
+        });
+        s.remove();resolve(out);
+      };
+      s.onerror=function(){s.remove();resolve({});};
+      document.head.appendChild(s);
+      setTimeout(function(){resolve({});},9000);
+    });
+  }
+  function getJSON(url){
+    return fetch(url).then(function(r){return r.json();}).catch(function(){return null;});
+  }
+  function tryDaily(tc){
+    var urls=[
+      'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param='+tc+',day,,,120,qfq',
+      'https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param='+tc+',day,,,120,qfq',
+      'https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param='+tc+',day,,,120,qfq'
+    ];
+    return urls.reduce(function(p,u){
+      return p.then(function(bars){
+        if(bars)return bars;
+        return getJSON(u).then(function(j){
+          var d=j&&j.data&&j.data[tc];
+          var arr=(d&&(d.qfqday||d.day||d.usday))||[];
+          if(!arr.length)return null;
+          return arr.map(function(x){return {o:+x[1],c:+x[2],h:+x[3],l:+x[4],v:+x[5]||0};});
+        });
+      });
+    },Promise.resolve(null));
+  }
+  function tryMinute(tc){
+    return getJSON('https://web.ifzq.gtimg.cn/appstock/app/minute/query?code='+tc).then(function(j){
+      var d=j&&j.data&&j.data[tc];
+      var arr=(d&&d.data&&d.data.data)||[];
+      if(!arr.length)return null;
+      return arr.map(function(line){return +(line.split(' ')[1]);});
+    });
+  }
+  function fallbackDaily(prev,price,seedKey){
+    var rnd=seedRand(codeSeed(seedKey)),bars=[],p=price*0.9;
+    for(var i=0;i<120;i++){
+      var r=(rnd()-0.48)*0.04+0.003;
+      var o=p,c=Math.max(1,p*(1+r));
+      bars.push({o:o,c:c,h:Math.max(o,c)*(1+rnd()*0.012),l:Math.min(o,c)*(1-rnd()*0.012),v:Math.round((0.7+rnd())*price*4e4)});
+      p=c;
+    }
+    var last=bars[119];last.c=price;last.h=Math.max(last.h,price);last.l=Math.min(last.l,price);
+    bars.prevClose=prev;return bars;
+  }
+  function fallbackMinute(prev,price){
+    var rnd=seedRand(codeSeed(prev+'m')),pts=[],p=prev,N=240;
+    for(var i=0;i<N;i++){
+      p=p+(price-p)/Math.max(1,N-i)+(rnd()-0.5)*prev*0.002;
+      pts.push(p);
+    }
+    pts[N-1]=price;return pts;
+  }
+
+  function loadExternal(tc){
+    var meta=EXT.find(function(e){return e.tc===tc;});
+    return batch([tc]).then(function(data){
+      var d=data[tc]||{};
+      var price=d.price||0, prev=d.prev||price||1;
+      return Promise.all([tryDaily(tc),tryMinute(tc)]).then(function(r){
+        var daily=r[0],minute=r[1];
+        if(!daily||!daily.length)daily=fallbackDaily(prev,price,tc);
+        if(!minute||!minute.length)minute=fallbackMinute(prev,price);
+        var last=daily[daily.length-1];
+        last.c=price;last.h=Math.max(last.h,price,d.high||0);last.l=Math.min(last.l,price,d.low||price);
+        if(!STOCKS.find(function(s){return s.code===tc;}))
+          STOCKS.push({code:tc,name:meta.name,sector:'外围市场',base:price});
+        quotes[tc]={code:tc,daily:daily,prevClose:prev,price:price,minute:minute,
+          open:d.open||last.o,high:d.high||last.h,low:d.low||last.l,
+          vol:d.vol||last.v,amt:d.amt||0,inflow:0,anchor:price,_anchor:price,alerted:false};
+      });
+    });
+  }
+
+  function switchMonitor(){
+    var t=document.querySelector('.tab[data-view="monitor"]');
+    if(t)t.click();
+  }
+  function gotoTarget(id){
+    if(/^\d{6}$/.test(id)){
+      selectedCode=id;
+      if(watchlist.indexOf(id)<0){watchlist.push(id);try{saveWatch();}catch(e){}}
+      switchMonitor();render();return;
+    }
+    var meta=EXT.find(function(e){return e.tc===id;});if(!meta)return;
+    switchMonitor();
+    if(quotes[id]){selectedCode=id;render();return;}
+    toast('正在加载 '+meta.name+' 行情…',true);
+    loadExternal(id).then(function(){selectedCode=id;render();});
+  }
+
+  /* 全站点击委托：榜单 / 雷达事件 / 外围行 */
+  document.addEventListener('click',function(e){
+    var rv=document.getElementById('reviewView');
+    var rank=e.target.closest('.rank-row');
+    if(rank&&rv&&rv.contains(rank)){
+      var c=rank.querySelector('.cd');
+      if(c)gotoTarget(c.textContent.trim());
+      return;
+    }
+    var ov=e.target.closest('.ov-item');
+    if(ov&&rv&&rv.contains(ov)){
+      var name=ov.querySelector('.l').textContent;
+      var m=EXT.find(function(x){return name.indexOf(x.key)>=0;});
+      if(m)gotoTarget(m.tc);
+      return;
+    }
+    var al=e.target.closest('.alert-item');
+    if(al){
+      var mm=al.textContent.match(/(\d{6})/);
+      if(mm)gotoTarget(mm[1]);
+    }
+  });
+
+  /* 外围标的详情页隐藏"移除自选" */
+  var prevRender=window.render;
+  window.render=function(){
+    prevRender.apply(this,arguments);
+    var rb=document.getElementById('removeBtn');
+    if(rb)rb.style.display=/^\d{6}$/.test(selectedCode)?'':'none';
+  };
+
+  /* ---------- 刷新按钮 + 倒计时合并 ---------- */
+  var countdownEl=document.getElementById('countdown');
+  if(countdownEl)countdownEl.style.display='none';
+  var rBtn=Array.prototype.slice.call(document.querySelectorAll('.topbar button'))
+    .find(function(b){return b.textContent.indexOf('手动刷新')>=0;});
+  if(rBtn){
+    rBtn.textContent='🔄 30s';
+    rBtn.addEventListener('click',function(){ try{cd=30;}catch(e){} });
+    setInterval(function(){
+      if(!rBtn.disabled){
+        var sec=30;
+        try{sec=Math.max(0,cd);}catch(e){}
+        rBtn.textContent='🔄 '+sec+'s';
+      }
+    },400);
+  }
+})();
+</script>
 </body>
 </html>
