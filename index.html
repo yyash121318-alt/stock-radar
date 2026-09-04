@@ -1527,5 +1527,48 @@ render();
   };
 })();
 </script>
+  <style>
+/* ===== 手机端图表高度修复 ===== */
+@media (max-width:860px){
+  .chart-wrap{ flex:none !important; height:auto !important; display:block !important; }
+  .chart-tabs{ flex:none; }
+  canvas{
+    flex:none !important;
+    display:block !important;
+    width:100% !important;
+    height:52vh !important;   /* 图表固定占屏幕一半多 */
+    min-height:280px !important;
+  }
+  .main .panel:nth-child(2){ overflow:hidden; }
+}
+</style>
+<script>
+/* ===== 图表重绘容错：切页面/切股票瞬间画布尺寸为0时自动补画 ===== */
+(function(){
+  var prevDraw=window.drawChart, retry=0;
+  window.drawChart=function(){
+    try{ prevDraw.apply(this,arguments); }catch(e){}
+    var r=canvas.getBoundingClientRect();
+    if((r.width<60||r.height<60)&&retry<8){
+      retry++;
+      setTimeout(function(){ window.drawChart(); },90);
+    }else{
+      retry=0;
+    }
+  };
+  /* 从复盘页/外围标的跳回盯盘页时，布局完成后补画一次 */
+  document.querySelectorAll('.tab').forEach(function(t){
+    t.addEventListener('click',function(){
+      if(t.dataset.view==='monitor'){
+        setTimeout(function(){ drawChart(); },150);
+      }
+    });
+  });
+  /* 手机横竖屏切换后重绘 */
+  window.addEventListener('orientationchange',function(){
+    setTimeout(function(){ drawChart(); },350);
+  });
+})();
+</script>
 </body>
 </html>
