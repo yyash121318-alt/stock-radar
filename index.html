@@ -1690,5 +1690,83 @@ render();
   setInterval(loadNews,60000);
 })();
 </script>
+  <script>
+/* ===== AI 盘中解盘（数据打包 + 调用 /api/ai，需部署到 Vercel） ===== */
+(function(){
+  function pct(q){return (q.price-q.prevClose)/q.prevClose*100;}
+  function fAmt(v){return Math.abs(v)>=1e8?(v/1e8).toFixed(2)+'亿':(v/1e4).toFixed(0)+'万';}
+
+  function buildPrompt(){
+    var arr=STOCKS.filter(function(s){return watchlist.includes(s.code);})
+                  .map(function(s){return {s:s,q:quotes[s.code]};});
+    var byPct=arr.slice().sort(function(a,b){return pct(b.q)-pct(a.q);});
+    var byFund=arr.slice().sort(function(a,b){return b.q.inflow-a.q.inflow;});
+    function L(x){return x.s.name+'('+x.s.code+') '+(pct(x.q)>=0?'+':'')+pct(x.q).toFixed(2)+'%';}
+    function F(x){return x.s.name+' '+(x.q.inflow>=0?'+':'-')+fAmt(x.q.inflow);}
+
+    var idx=INDICES.map(function(i){
+      return i.name+' '+i.v.toFixed(2)+'('+(i.p>=0?'+':'')+i.p.toFixed(2)+'%)';
+    }).join('，');
+    var ov=OVERSEAS.map(function(o){
+      return o.name+' '+(o.p>=0?'+':'')+o.p.toFixed(2)+'%';
+    }).join('，');
+    var news=Array.prototype.slice.call(document.querySelectorAll('#newsCard a'))
+      .map(function(a){return a.textContent.trim();}).slice(0,10);
+
+    return '现在时间：'+new Date().toLocaleString('zh-CN',{hour12:false})+'\n'
+      +'大盘指数：'+idx+'\n'
+      +'自选池涨幅前5：\n'+byPct.slice(0,5).map(L).join('\n')+'\n'
+      +'跌幅前5：\n'+byPct.slice(-5).reverse().map(L).join('\n')+'\n'
+      +'主力净流入前5：\n'+byFund.slice(0,5).map(F).join('\n')+'\n'
+      +'主力净流出前5：\n'+byFund.slice(-5).reverse().map(F).join('\n')+'\n'
+      +'外围市场：'+ov+'\n'
+      +'最新财经快讯：\n'+news.map(function(t,i){return (i+1)+'. '+t;}).join('\n')
+      +'\n\n请基于以上数据做今日盘中解读。';
+  }
+
+  function injectAICard(){
+    var rv=document.getElementById('reviewView');
+    if(!rv||document.getElementById('aiCard'))return;
+    var card=document.createElement('div');
+    card.id='aiCard';card.className='rv-card';card.style.gridColumn='1/-1';
+    card.innerHTML='<h4>🧠 AI 盘中解盘 <span style="font-weight:400;color:var(--muted);font-size:11px">（大模型推理 · 每次约1-3分钱 · 需Vercel部署）</span></h4>'
+      +'<div style="padding:14px">'
+      +'<button class="btn" id="aiBtn" style="background:var(--accent);border-color:var(--accent);font-size:13px">▶ 生成盘中解盘</button>'
+      +'<div id="aiOut" style="margin-top:12px;font-size:13px;line-height:2;white-space:pre-wrap;"></div>'
+      +'</div>';
+    rv.insertBefore(card,rv.firstChild);
+    document.getElementById('aiBtn').onclick=runAI;
+  }
+
+  function runAI(){
+    var btn=document.getElementById('aiBtn'),out=document.getElementById('aiOut');
+    btn.disabled=true;btn.textContent='🧠 推理中… 约10秒';
+    out.textContent='正在汇总指数 / 涨跌榜 / 资金流 / 外围 / 快讯，调用大模型…';
+    fetch('/api/ai',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt:buildPrompt()})
+    }).then(function(r){
+      return r.json().then(function(j){return {ok:r.ok,j:j};});
+    }).then(function(r){
+      if(!r.ok)throw new Error(r.j.error||'请求失败');
+      out.textContent=r.j.content;
+    }).catch(function(e){
+      out.innerHTML='<span style="color:var(--up);line-height:1.9">⚠️ AI 解盘需要后端接口：GitHub Pages 不支持运行接口。<br>'
+        +'请把本仓库部署到 <b>Vercel</b>（免费）：导入仓库后，在 Settings → Environment Variables 添加 '
+        +'<b>ARK_API_KEY</b> 和 <b>ARK_MODEL</b>（方舟 ep- 接入点），重新部署后用 vercel.app 域名访问即可。<br>'
+        +'错误信息：'+String(e.message)+'</span>';
+    }).finally(function(){
+      btn.disabled=false;btn.textContent='▶ 重新生成解盘';
+    });
+  }
+
+  var prevRR=window.renderReview;
+  window.renderReview=function(){
+    prevRR.apply(this,arguments);
+    injectAICard();
+  };
+})();
+</script>
 </body>
 </html>
