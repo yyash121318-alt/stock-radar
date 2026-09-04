@@ -1028,5 +1028,131 @@ render();
   setInterval(fetchOverseas,30000);
 })();
 </script>
+  <script>
+/* ===== 手动刷新按钮：立即刷新 行情+资金+外围 ===== */
+(function(){
+  function tc(code){
+    if(code[0]==='6')return 'sh'+code;
+    if(code[0]==='4'||code[0]==='8')return 'bj'+code;
+    return 'sz'+code;
+  }
+  function batch(tcodes){
+    return new Promise(function(resolve){
+      tcodes.forEach(function(t){try{window['v_'+t]=undefined;}catch(e){}});
+      var s=document.createElement('script');s.charset='GBK';
+      s.src='https://qt.gtimg.cn/q='+tcodes.join(',');
+      s.onload=function(){
+        var out={};
+        tcodes.forEach(function(t){
+          var raw=window['v_'+t];if(!raw)return;
+          var a=raw.split('~');var price=parseFloat(a[3]);if(!price)return;
+          out[t]={price:price,prev:parseFloat(a[4])||price,open:parseFloat(a[5])||price,
+            high:parseFloat(a[33])||price,low:parseFloat(a[34])||price,
+            vol:parseFloat(a[6])||0,amt:(parseFloat(a[37])||0)*10000,pct:parseFloat(a[32])||0};
+        });
+        s.remove();resolve(out);
+      };
+      s.onerror=function(){s.remove();resolve({});};
+      document.head.appendChild(s);
+      setTimeout(function(){resolve({});},8000);
+    });
+  }
+  function jsonp(url){
+    return new Promise(function(res){
+      var cb='__mf'+Date.now()+Math.floor(Math.random()*1e6);
+      var s=document.createElement('script');
+      window[cb]=function(d){res(d);try{delete window[cb];}catch(e){window[cb]=undefined;}s.remove();};
+      s.onerror=function(){res(null);s.remove();};
+      s.src=url+(url.indexOf('?')>=0?'&':'?')+'cb='+cb;
+      document.head.appendChild(s);
+      setTimeout(function(){res(null);},9000);
+    });
+  }
+  var OS_CODES={'usIXIC':'纳斯达克','usINX':'标普500','usDJI':'道琼斯','hkHSTECH':'恒生科技',
+    'jpNI225':'日经225','usSOXX':'费城半导体','kr005930':'三星电子','kr000660':'SK海力士'};
+
+  /* 顶栏按钮 */
+  var btn=document.createElement('button');
+  btn.className='btn';btn.textContent='🔄 手动刷新';
+  var sim=document.getElementById('simBtn');
+  if(sim)sim.parentNode.insertBefore(btn,sim);else document.querySelector('.topbar').appendChild(btn);
+
+  /* 手动刷新的指数快照（防止被自动刷新覆盖显示，35秒后过期） */
+  var idxManual=null,idxTime=0;
+  var prevRender=window.render;
+  window.render=function(){
+    prevRender.apply(this,arguments);
+    if(idxManual&&Date.now()-idxTime<35000){
+      document.getElementById('idxbar').innerHTML=INDICES.map(function(i){
+        return '<div class="idx"><span class="nm">'+i.name+'</span><span class="px '+(i.p>=0?'up':'down')+'">'+i.v.toFixed(2)+'</span><span class="pc '+(i.p>=0?'up':'down')+'">'+(i.p>=0?'+':'')+i.p.toFixed(2)+'%</span></div>';
+      }).join('');
+    }else{idxManual=null;}
+  };
+
+  var busy=false;
+  btn.onclick=function(){
+    if(busy)return;
+    busy=true;btn.disabled=true;btn.textContent='⏳ 刷新中…';
+    Promise.all([refreshQuotes(),refreshFunds(),refreshOverseas()]).then(function(){
+      try{render();}catch(e){}
+      var rv=document.getElementById('reviewView');
+      if(rv&&rv.classList.contains('show')){try{renderReview();}catch(e){}}
+      btn.disabled=false;btn.textContent='🔄 手动刷新';busy=false;
+      toast('已手动刷新 · '+new Date().toLocaleTimeString('zh-CN',{hour12:false}),true);
+    });
+  };
+
+  function refreshQuotes(){
+    var codes=STOCKS.map(function(s){return tc(s.code);});
+    return batch(codes).then(function(data){
+      STOCKS.forEach(function(s){
+        var d=data[tc(s.code)],q=quotes[s.code];
+        if(!d||!q)return;
+        q.prevClose=d.prev;q.open=d.open;q.high=d.high;q.low=d.low;
+        q.vol=d.vol;q.amt=d.amt;
+        var oldP=q.price;q.price=d.price;
+        if(q.minute&&q.minute.length)q.minute[q.minute.length-1]=d.price;
+        if(q.daily&&q.daily.length){var b=q.daily[q.daily.length-1];b.c=d.price;b.h=d.high;b.l=d.low;b.v=d.vol;}
+        /* 30秒±2%警报（沿用自动周期锚点，手动刷新不重置） */
+        var anchor=q._anchor||oldP;
+        var move=(d.price-anchor)/anchor;
+        if(!q._alerted&&Math.abs(move)>=0.02){q._alerted=true;pushAlert(s,move);}
+        if(Math.abs(move)<0.01)q._alerted=false;
+      });
+      return batch(['sh000001','sz399001','sz399006','sh000688']).then(function(idata){
+        var map=[['sh000001',0],['sz399001',1],['sz399006',2],['sh000688',3]],snap=[];
+        map.forEach(function(m){var d=idata[m[0]];if(d){INDICES[m[1]].v=d.price;INDICES[m[1]].p=d.pct;snap[m[0]]={v:d.price,p:d.pct};}});
+        idxManual=snap;idxTime=Date.now();
+      });
+    }).catch(function(){});
+  }
+
+  function refreshFunds(){
+    var secs=STOCKS.map(function(s){return (s.code[0]==='6'?'1.':'0.')+s.code;}).join(',');
+    var url='https://push2.eastmoney.com/api/qt/ulist.np/get?ut=b2884a393a59ad64002292a3e90d46a5&fltt=2&invt=2&secids='+secs+'&fields=f12,f62,f184';
+    return jsonp(url).then(function(j){
+      var d=j&&j.data&&j.data.diff;if(!d||!d.length)return;
+      d.forEach(function(r){
+        var q=quotes[r.f12];if(!q)return;
+        if(typeof r.f62==='number'&&isFinite(r.f62))q.inflow=r.f62;
+        if(typeof r.f184==='number'&&isFinite(r.f184))q._fundRatio=r.f184;
+      });
+    }).catch(function(){});
+  }
+
+  function refreshOverseas(){
+    var codes=Object.keys(OS_CODES);
+    return batch(codes).then(function(data){
+      codes.forEach(function(t){
+        var d=data[t];if(!d)return;
+        var p=(d.price-d.prev)/d.prev*100;
+        var name=OS_CODES[t];
+        var target=OVERSEAS.find(function(x){return x.name===name||x.name.indexOf(name)>=0;});
+        if(target){target.v=d.price;target.p=p;}
+      });
+    }).catch(function(){});
+  }
+})();
+</script>
 </body>
 </html>
