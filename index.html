@@ -19,7 +19,6 @@ button,input,select{font:inherit}
 .sp{flex:1}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
-/* 顶栏 */
 .top{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--pn);
 border-bottom:1px solid var(--bd);flex-wrap:wrap}
 .brand{font-weight:700;font-size:15px;white-space:nowrap}
@@ -40,7 +39,6 @@ color:var(--tx);cursor:pointer;font-size:12px;white-space:nowrap}
 .mini{padding:3px 9px;font-size:11px;border:1px solid var(--bd);background:var(--bg);
 color:var(--mu);border-radius:6px;cursor:pointer;white-space:nowrap}
 .mini:hover{color:var(--tx);border-color:var(--ac)}
-/* 指数条 */
 .idxbar{display:flex;gap:8px;padding:7px 12px;background:var(--pn);
 border-bottom:1px solid var(--bd);overflow-x:auto;flex-shrink:0}
 .idx{display:flex;align-items:baseline;gap:7px;padding:5px 10px;background:var(--pn2);
@@ -49,14 +47,12 @@ border:1px solid var(--bd);border-radius:7px;cursor:pointer;white-space:nowrap}
 .idx .n{color:var(--mu);font-size:12px}
 .idx .p{font-weight:700;font-variant-numeric:tabular-nums}
 .idx .c{font-size:12px;font-variant-numeric:tabular-nums}
-/* 状态条 */
 .pulse{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:8px 8px 0;flex-shrink:0}
 .pcard{background:var(--pn);border:1px solid var(--bd);border-radius:9px;padding:8px 10px;min-width:0}
 .pcard .k{color:var(--mu);font-size:11px;margin-bottom:3px;white-space:nowrap;
 overflow:hidden;text-overflow:ellipsis}
 .pcard .v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* 盯盘主区 */
 #monitorView{flex:1;display:block;overflow-y:auto;padding-bottom:8px;min-height:0}
 .filters{padding:8px 8px 6px;border-bottom:1px solid var(--bd)}
 .chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:7px}
@@ -98,7 +94,6 @@ background:var(--pn);position:sticky;top:0;z-index:10}
  .extra{display:block;text-align:right;color:var(--mu);font-size:12px}
 }
 .empty{padding:20px 14px;color:var(--mu);font-size:12px;text-align:center;line-height:1.9}
-/* 详情浮层 */
 .detail{position:fixed;inset:0;z-index:70;background:var(--bg);display:none;flex-direction:column}
 .detail.show{display:flex}
 .dvbar{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--pn);
@@ -126,7 +121,6 @@ border-radius:6px;color:var(--tx);font-size:12px;outline:none}
 .ctab.active{background:var(--ac);color:#fff}
 canvas{width:100%;height:280px;display:block}
 @media(min-width:900px){.detail{left:auto;right:0;width:480px;border-left:1px solid var(--bd)}}
-/* 复盘 */
 #reviewView{flex:1;overflow-y:auto;padding:10px;display:none;min-height:0}
 #reviewView.show{display:block}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:10px;margin-bottom:10px}
@@ -143,7 +137,6 @@ border-bottom:1px solid #20262f;font-size:12px;cursor:pointer;align-items:center
 .bar{height:4px;border-radius:2px;background:#20262f;margin-top:4px;overflow:hidden}
 .bar>i{display:block;height:100%}
 .hint{color:var(--mu);font-size:11px;line-height:1.8}
-/* 弹窗 */
 .mask{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:80;display:flex;
 align-items:center;justify-content:center;padding:16px}
 .modal{background:var(--pn);border:1px solid var(--bd);border-radius:12px;width:100%;
@@ -282,7 +275,7 @@ padding:9px 13px;border-radius:8px;font-size:12px;box-shadow:0 4px 18px #0008}
 
 <script>
 'use strict';
-/* ============ 1. 基础数据（你原来的 50 只科技股 + 板块分类，原样保留） ============ */
+/* ============ 1. 基础数据 ============ */
 const SECTORS=['光模块','光纤光缆','电源','MLCC','半导体设备','半导体材料','光刻胶','靶材','存储'];
 const RAW=[
  ['300308','中际旭创','光模块'],['300502','新易盛','光模块'],['300394','天孚通信','光模块'],
@@ -312,11 +305,10 @@ const INDEX_DEFS=[
  {code:'1.000001',name:'上证指数'},{code:'0.399001',name:'深证成指'},
  {code:'0.399006',name:'创业板指'},{code:'1.000688',name:'科创50'}
 ];
-/* 外围指数：若某个取不到会自动隐藏，不影响其它数据 */
 const OUT_DEFS=[
  {code:'100.NDX',name:'纳斯达克'},{code:'100.SPX',name:'标普500'},{code:'100.DJIA',name:'道琼斯'}
 ];
-const US_FS='m:105,m:106,m:107';   /* 美股市场：105 纳斯达克 / 106 纽交所 / 107 美交所 */
+const US_FS='m:105,m:106,m:107';
 
 /* ============ 2. 本机存储与状态 ============ */
 const LS={w:'kj_watch',c:'kj_cfg',n:'kj_notes'};
@@ -368,7 +360,7 @@ function inSession(){
   const d=new Date(),w=d.getDay();
   if(w===0||w===6)return false;
   const m=d.getHours()*60+d.getMinutes();
-  return (m>=570&&m<=690)||(m>=780&&m<=900);              /* 09:30-11:30 / 13:00-15:00 */
+  return (m>=570&&m<=690)||(m>=780&&m<=900);
 }
 function toast(msg){
   const el=document.createElement('div');el.className='toast';el.textContent=msg;
@@ -419,7 +411,6 @@ async function emBoard(){
     amt:num(r.f6)
   })).filter(x=>x.name);
 }
-/* 行情对象 */
 const quotes={};
 function mkQuote(code,name,sector){
   return {code,name,sector,price:null,chg:null,prevClose:null,open:null,high:null,low:null,
@@ -433,9 +424,10 @@ function ensureQuote(code,name,sector){
   if(!quotes[code])quotes[code]=mkQuote(code,name||showCode(code),sector||'美股');
   return quotes[code];
 }
-/* 把接口返回写进行情对象 */
+/* 把接口返回写进行情对象
+   注意：f13 市场标记 深市=0、沪市=1，数字 0 不能用 || 兜底，必须 String() */
 function applyRow(r,map){
-  const code=map[(r.f13||'')+'.'+(r.f12||'')];
+  const code=map[String(r.f13)+'.'+String(r.f12)]||map[String(r.f12)];
   if(!code)return;
   const q=quotes[code];if(!q)return;
   const prev=num(r.f18), chg=num(r.f3);
@@ -484,7 +476,11 @@ async function sync(){
     const codes=[...new Set([].concat(STOCKS.map(s=>s.code),INDEX_DEFS.map(i=>i.code),
       watchlist,selected))].filter(c=>secid(c));
     const map={};
-    codes.forEach(c=>{const sd=secid(c);if(sd)map[sd]=c;});
+    codes.forEach(c=>{
+      const sd=secid(c);if(!sd)return;
+      map[sd]=c;                                     /* 例：0.300308 */
+      map[String(c).replace(/^us/,'')]=c;             /* 兜底：300308 / 105.AAPL */
+    });
     const rows=await emList(Object.keys(map));
     if(!rows.length)throw new Error('返回为空');
     rows.forEach(r=>applyRow(r,map));
@@ -524,8 +520,8 @@ async function manualRefresh(){
   b.disabled=false;b.textContent='🔄';paint();
 }
 async function selfCheck(){
-  const t=[['A股 浦发银行','1.600000'],['创业板指','0.399006'],['科创50','1.000688'],
-    ['纳斯达克','100.NDX'],['标普500','100.SPX'],['道琼斯','100.DJIA']];
+  const t=[['A股 浦发银行','1.600000'],['深圳 中际旭创','0.300308'],['创业板指','0.399006'],
+    ['科创50','1.000688'],['纳斯达克','100.NDX'],['标普500','100.SPX'],['道琼斯','100.DJIA']];
   for(const [n,id] of t){
     try{
       const r=await emList([id]);
@@ -539,7 +535,7 @@ async function selfCheck(){
   toast('自检完成，结果见控制台');
 }
 
-/* ============ 5. 雷达预警（真实字段 · 只在状态跳变时报一次） ============ */
+/* ============ 5. 雷达预警 ============ */
 const ICON={speed:'⚡',volume:'📊',fund:'💰',limit:'🔴'};
 let lastNotif=0,lastBeep=0,audio=null;
 const eventUp=ev=>!/(跌|出逃|下杀)/.test(ev.title);
@@ -686,7 +682,7 @@ function paintList(){
   }
   const sig=list.map(s=>s.code).join(',')+'|'+activeSector+'|'+sortKey+sortDir+'|'+
     selected+'|'+manageMode+'|'+batchPick.size;
-  if(sig===listSig){updateRows(list);return;}   /* 结构没变只改数字：列表不闪、滑动不跳 */
+  if(sig===listSig){updateRows(list);return;}   /* 结构没变只改数字：不闪、滑动不跳 */
   listSig=sig;
   $('sList').innerHTML=list.map(rowHtml).join('');
   $('bDel').disabled=batchPick.size===0;
@@ -1048,7 +1044,6 @@ $('bDel').onclick=()=>{
   if(watchlist.indexOf(selected)<0)selected=watchlist[0]||STOCKS[0].code;
   listSig='';paint();toast('已移除 '+n+' 只');
 };
-/* 搜索 */
 const sIn=$('sInput'), sRes=$('sRes');
 sIn.oninput=()=>{
   const kw=sIn.value.trim();
@@ -1078,7 +1073,6 @@ sRes.onclick=e=>{
 document.addEventListener('click',e=>{
   if(!e.target.closest('.sb2'))sRes.classList.remove('show');
 });
-/* 设置 */
 function fillSet(){
   $('ivSel').value=String(cfg.interval);
   $('soundChk').checked=cfg.sound;$('notifChk').checked=cfg.notif;
