@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0e1116">
-<title>科技股雷达 · 实时盯盘</title>
+<title>科技股雷达 · 实时盯盘 v3</title>
 <style>
 :root{--bg:#0e1116;--pn:#161b22;--pn2:#1c232d;--bd:#2a313c;--tx:#e6edf3;--mu:#8b949e;
 --up:#f5455c;--dn:#22c55e;--ac:#3b82f6;--r:10px}
@@ -19,6 +19,8 @@ button,input,select{font:inherit}
 .sp{flex:1}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.ver{font-size:10px;color:var(--mu);border:1px solid var(--bd);border-radius:4px;
+padding:0 4px;vertical-align:middle;font-weight:400}
 .top{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--pn);
 border-bottom:1px solid var(--bd);flex-wrap:wrap}
 .brand{font-weight:700;font-size:15px;white-space:nowrap}
@@ -166,7 +168,7 @@ padding:9px 13px;border-radius:8px;font-size:12px;box-shadow:0 4px 18px #0008}
 <body>
 
 <div class="top">
-  <div class="brand"><i>◈</i> 科技股雷达</div>
+  <div class="brand"><i>◈</i> 科技股雷达 <span class="ver">v3</span></div>
   <nav class="tabs">
     <div class="tab active" data-view="monitor">盯盘</div>
     <div class="tab" data-view="review">收盘复盘</div>
@@ -238,7 +240,7 @@ padding:9px 13px;border-radius:8px;font-size:12px;box-shadow:0 4px 18px #0008}
 
 <div class="mask" id="setMask" hidden>
   <div class="modal">
-    <h2>设置</h2>
+    <h2>设置 <span class="ver">v3</span></h2>
     <div class="mbody">
       <div class="frow"><span>行情刷新频率</span>
         <select id="ivSel">
@@ -262,6 +264,7 @@ padding:9px 13px;border-radius:8px;font-size:12px;box-shadow:0 4px 18px #0008}
         <button class="mini" id="selfChk">运行</button></div>
       <div class="hint" style="margin-top:10px">
         数据来自公开行情接口（东方财富），刷新 2~10 秒可调；非交易时段自动降频到 20 秒。
+        顶部绿灯会显示「取到只数 / 请求只数」，若不是全部取到，点上面「接口自检」看原因。
         所有数字都是接口真实返回，不含任何模拟或随机数据。
       </div>
     </div>
@@ -344,15 +347,15 @@ const hhmm=ts=>ts?new Date(ts).toLocaleTimeString('zh-CN',{hour12:false}):'--';
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function pct(q){
   if(!q)return null;
-  if(num(q.chg)!=null)return q.chg;                       /* 用接口真实涨跌幅 */
+  if(num(q.chg)!=null)return q.chg;
   return (num(q.price)!=null&&num(q.prevClose))?(q.price-q.prevClose)/q.prevClose*100:null;
 }
 function secid(c){
   if(!c)return null;
   c=String(c).replace(/^us/,'');
-  if(c.indexOf('.')>0)return c;                           /* 已是 secid */
-  if(/^6/.test(c))return '1.'+c;                          /* 沪市 */
-  if(/^(0|3|4|8)/.test(c))return '0.'+c;                  /* 深市 / 北交所 */
+  if(c.indexOf('.')>0)return c;
+  if(/^6/.test(c))return '1.'+c;
+  if(/^(0|3|4|8)/.test(c))return '0.'+c;
   return null;
 }
 function limitPct(c){const s=showCode(c);return s[0]==='3'||s.indexOf('688')===0?20:10;}
@@ -392,6 +395,16 @@ async function emList(secids){
   const d=await jsonp(u);
   return (d&&d.data&&d.data.diff)||[];
 }
+/* 分批请求：每批 25 只，避免单次 URL 过长或返回被截断 */
+async function emListBig(secids){
+  const out=[];
+  for(let i=0;i<secids.length;i+=25){
+    const part=secids.slice(i,i+25);
+    try{ const r=await emList(part); out.push.apply(out,r); }
+    catch(e){ if(i===0)throw e; }
+  }
+  return out;
+}
 async function emTrends(sd){
   const u=EMH+'/api/qt/stock/trends2/get?ut='+UT+'&secid='+sd+'&iscr=0&ndays=1'+
     '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53,f56,f58';
@@ -424,10 +437,12 @@ function ensureQuote(code,name,sector){
   if(!quotes[code])quotes[code]=mkQuote(code,name||showCode(code),sector||'美股');
   return quotes[code];
 }
-/* 把接口返回写进行情对象
-   注意：f13 市场标记 深市=0、沪市=1，数字 0 不能用 || 兜底，必须 String() */
+/* 匹配接口行 → 我们的代码
+   三重保险：① 按裸代码 f12 匹配 ② 按 市场.代码 匹配 ③ 请求表里已同时存了两种键
+   （注意：f13 里深市是数字 0，绝不能用 || 兜底） */
 function applyRow(r,map){
-  const code=map[String(r.f13)+'.'+String(r.f12)]||map[String(r.f12)];
+  const bare=String(r.f12);
+  const code=map[bare]||map[String(r.f13)+'.'+bare];
   if(!code)return;
   const q=quotes[code];if(!q)return;
   const prev=num(r.f18), chg=num(r.f3);
@@ -469,7 +484,6 @@ function setNet(ok,msg){
   el.className='net '+(ok?'ok':'err');
   el.textContent=(ok?'● ':'▲ ')+msg;
 }
-/* 主同步：一次请求覆盖自选 + 指数 + 你查看过的美股 */
 async function sync(){
   if(syncing)return;syncing=true;
   try{
@@ -477,21 +491,23 @@ async function sync(){
       watchlist,selected))].filter(c=>secid(c));
     const map={};
     codes.forEach(c=>{
-      const sd=secid(c);if(!sd)return;
-      map[sd]=c;                                     /* 例：0.300308 */
-      map[String(c).replace(/^us/,'')]=c;             /* 兜底：300308 / 105.AAPL */
+      const s=String(c);
+      map[s]=c;                                  /* 1.000001 / 100.SPX / us105.AAPL */
+      map[s.replace(/^us/,'')]=c;                /* 105.AAPL */
+      map[s.split('.').pop()]=c;                 /* 000001 / SPX / 300308 / AAPL */
     });
-    const rows=await emList(Object.keys(map));
+    const rows=await emListBig(Object.keys(map));
     if(!rows.length)throw new Error('返回为空');
     rows.forEach(r=>applyRow(r,map));
-    failCount=0;setNet(true,'实时 '+nowTime());
+    const got=codes.filter(c=>quotes[c]&&num(quotes[c].price)!=null).length;
+    failCount=0;setNet(true,'实时 '+nowTime()+' · '+got+'/'+codes.length);
     const now=Date.now();
     if(selected&&now-lastTrend>12000){lastTrend=now;loadTrends(selected).then(paint);}
     if(now-lastBoardAt>30000){lastBoardAt=now;emBoard().then(b=>{board=b;paint();}).catch(()=>{});}
     if(chartMode==='kline'&&selected&&now-lastKlineAt>300000){lastKlineAt=now;loadKline(selected).then(paint);}
     radarScan();
-    emList(OUT_DEFS.map(o=>o.code)).then(rs=>{
-      const m={};OUT_DEFS.forEach(o=>m[o.code]=o.code);
+    emListBig(OUT_DEFS.map(o=>o.code)).then(rs=>{
+      const m={};OUT_DEFS.forEach(o=>{m[o.code]=o.code;m[o.code.split('.').pop()]=o.code;});
       rs.forEach(r=>applyRow(r,m));paint();
     }).catch(()=>{});
     okCount++;
@@ -505,7 +521,7 @@ async function sync(){
 let loopId=null;
 function scheduleNext(){
   clearTimeout(loopId);
-  const wait=inSession()?cfg.interval:20000;               /* 休市自动降频 */
+  const wait=inSession()?cfg.interval:20000;
   loopId=setTimeout(async()=>{
     if(!document.hidden)await sync();
     scheduleNext();
@@ -519,19 +535,24 @@ async function manualRefresh(){
   if(chartMode==='kline'&&selected)await loadKline(selected).catch(()=>{});
   b.disabled=false;b.textContent='🔄';paint();
 }
+/* 自检：把接口原始返回打印到控制台，方便定位是"没取到"还是"没匹配上" */
 async function selfCheck(){
-  const t=[['A股 浦发银行','1.600000'],['深圳 中际旭创','0.300308'],['创业板指','0.399006'],
-    ['科创50','1.000688'],['纳斯达克','100.NDX'],['标普500','100.SPX'],['道琼斯','100.DJIA']];
+  const t=[['沪市 浦发银行','1.600000'],['深市 中际旭创','0.300308'],['深市 新易盛','0.300502'],
+    ['创业板指','0.399006'],['科创50','1.000688'],['纳斯达克','100.NDX'],
+    ['标普500','100.SPX'],['道琼斯','100.DJIA']];
+  console.log('版本：v3 · 分批请求 25 只/批 · 三重匹配');
   for(const [n,id] of t){
     try{
       const r=await emList([id]);
-      console.log(n,id,r.length?JSON.stringify(r[0]).slice(0,200):'❌ 无数据');
-    }catch(e){console.log(n,id,'❌',e.message);}
+      console.log(n,'|',id,'|',r.length?'✅ '+JSON.stringify(r[0]).slice(0,220):'❌ 接口无返回');
+    }catch(e){console.log(n,'|',id,'| ❌',e.message);}
   }
   try{
     const b=await emBoard();
-    console.log('美股活跃榜',b.length?b.slice(0,3).map(x=>x.name+' '+x.price).join(' | '):'❌ 无数据');
-  }catch(e){console.log('美股活跃榜 ❌',e.message);}
+    console.log('美股活跃榜 |',b.length?'✅ '+b.slice(0,3).map(x=>x.name+' '+x.price).join(' | '):'❌ 无返回');
+  }catch(e){console.log('美股活跃榜 | ❌',e.message);}
+  const miss=STOCKS.filter(s=>!quotes[s.code]||num(quotes[s.code].price)==null).map(s=>s.code);
+  console.log('当前未取到行情的自选股（'+miss.length+' 只）：',miss.join(', ')||'无');
   toast('自检完成，结果见控制台');
 }
 
@@ -561,7 +582,7 @@ function notify(title,body){
 }
 function pushEvent(stock,type,title,text,severe){
   const q=quotes[stock.code], now=Date.now();
-  if(q.cd[type]&&now-q.cd[type]<60000)return;              /* 同规则 60 秒不重复 */
+  if(q.cd[type]&&now-q.cd[type]<60000)return;
   q.cd[type]=now;
   events.unshift({name:stock.name,code:stock.code,type,title,text,t:nowTime(),sev:!!severe});
   if(events.length>60)events.pop();
@@ -682,7 +703,7 @@ function paintList(){
   }
   const sig=list.map(s=>s.code).join(',')+'|'+activeSector+'|'+sortKey+sortDir+'|'+
     selected+'|'+manageMode+'|'+batchPick.size;
-  if(sig===listSig){updateRows(list);return;}   /* 结构没变只改数字：不闪、滑动不跳 */
+  if(sig===listSig){updateRows(list);return;}
   listSig=sig;
   $('sList').innerHTML=list.map(rowHtml).join('');
   $('bDel').disabled=batchPick.size===0;
@@ -768,14 +789,13 @@ function paintPulse(){
   const c=(k,v,cls,sub)=>'<div class="pcard"><div class="k">'+esc(k)+'</div>'+
     '<div class="v '+(cls||'')+'">'+v+'</div><div class="k" style="margin:3px 0 0">'+esc(sub||'')+'</div></div>';
   $('pulse').innerHTML=
-    c('自选池平均涨跌',fPct(avg),avg>=0?'up':'dn',arr.length+' 只有数据')+
+    c('自选池平均涨跌',fPct(avg),avg>=0?'up':'dn',arr.length+'/'+watchlist.length+' 只有数据')+
     c('涨 / 跌','<span class="up">'+up+'</span> / <span class="dn">'+dn+'</span>','',
       (arr.length-up-dn)+' 只平盘')+
     c('主力净流入合计',fAmt(flow),flow>=0?'up':'dn','接口真实字段')+
     c('最新雷达信号',ev?esc(ev.name+' '+ev.title):'—',ev?(eventUp(ev)?'up':'dn'):'',
       inSession()?'盘中':'休市 · 显示最近收盘');
 }
-/* ---- 图表 ---- */
 const canvas=$('chart'), ctx=canvas.getContext('2d');
 function fitCanvas(){
   const dpr=window.devicePixelRatio||1, r=canvas.getBoundingClientRect();
@@ -882,7 +902,6 @@ function drawK(q,W,H){
     ctx.fillText(String(data[i].d||'').slice(5),tx,H-6);
   });
 }
-/* ---- 复盘页 ---- */
 function paintReview(){
   const arr=STOCKS.filter(s=>watchlist.indexOf(s.code)>=0)
     .map(s=>({s,q:quotes[s.code]})).filter(x=>num(x.q.price)!=null);
@@ -927,7 +946,7 @@ function paintReview(){
       '<span class="v">'+e.t+'</span></div>').join(''):
       '<div class="empty">雷达尚未触发信号（休市时不触发很正常）</div>')+'</div>'+
   '<div class="card"><h4>数据说明</h4><div class="hint">'+
-    '行情来自公开行情接口，刷新频率 '+cfg.interval/1000+' 秒，休市自动降为 20 秒。'+
+    '版本 v3 · 行情来自公开行情接口，刷新频率 '+cfg.interval/1000+' 秒，休市自动降为 20 秒。'+
     '所有数字均为接口真实返回值，不含任何模拟或随机生成内容。'+
     '美股榜单按成交额排序，取纳斯达克 / 纽交所 / 美交所前 20 名，点击可加入自选并查看分时与日K。'+
     '<br>仅供个人自用，行情可能延迟，不构成投资建议。</div></div>';
@@ -991,7 +1010,7 @@ document.querySelectorAll('.ctab').forEach(t=>t.onclick=()=>{
 $('refBtn').onclick=manualRefresh;
 $('expBtn').onclick=()=>{
   const L=[];
-  L.push('科技股雷达 · 盯盘复盘报告');
+  L.push('科技股雷达 · 盯盘复盘报告（v3）');
   L.push('生成时间：'+new Date().toLocaleString('zh-CN'));
   L.push('数据来源：公开行情接口（真实数据）');
   L.push('');
@@ -1115,6 +1134,7 @@ window.addEventListener('orientationchange',()=>setTimeout(drawChart,300));
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)sync();});
 
 /* ============ 9. 启动 ============ */
+console.log('科技股雷达 v3 已加载');
 fillSet();
 render();
 scheduleNext();
