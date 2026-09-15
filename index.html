@@ -500,7 +500,7 @@ function qqCode(code){
 }
 const providerState={qq:{name:'腾讯',failures:0,retryAt:0},em:{name:'东财',failures:0,retryAt:0}};
 const metrics={qq:0,em:0,rejected:0};
-let boardFetchedAt=0, boardRetryTimer=null;
+let boardFetchedAt=0;
 // 腾讯返回变量赋值而非回调。在临时同源空白iframe内读取，避免超时旧脚本污染下一次请求。
 function scriptValues(url,keys,charset='utf-8',timeout=11000){
   return new Promise((resolve,reject)=>{
@@ -663,26 +663,14 @@ function updateHealth(){
   $('sessionLabel').textContent=inSession()?'交易时段 · 可能延迟':'非A股连续交易时段 · 最近行情';
   const count=$('watchCount');if(count)count.textContent=visible().length+' 只';
 }
-// 美股每日活跃 TOP20：独立请求，成功按3分钟刷新，失败30秒后自动重试。
-function fetchBoard(force=false){
-  const now=Date.now();
-  if(boardBusy)return;
-  if(!force && now-lastBoardAt<180000)return;
-  boardBusy=true;lastBoardAt=now;
-  clearTimeout(boardRetryTimer);boardRetryTimer=null;
-  emBoard().then(b=>{
-    if(!b.length)throw new Error('榜单为空');
-    board=b;boardError='';boardFetchedAt=Date.now();
-    b.forEach(x=>ensureQuote(x.code,x.name,'美股'));
-  }).catch(e=>{
-    boardError=e.message;logDiag('美股榜单：'+e.message);
-    boardRetryTimer=setTimeout(()=>fetchBoard(true),30000);
-  }).finally(()=>{boardBusy=false;paint();});
-}
 function backgroundData(){
   const now=Date.now();
   if(detailOpen){loadTrends(selected);if(chartMode==='kline')loadKline(selected);}
-  fetchBoard();
+  if(!boardBusy&&now-lastBoardAt>180000){
+    boardBusy=true;lastBoardAt=now;
+    emBoard().then(b=>{if(!b.length)throw new Error('榜单为空');board=b;boardError='';boardFetchedAt=Date.now();b.forEach(x=>ensureQuote(x.code,x.name,'美股'));})
+      .catch(e=>{boardError=e.message;logDiag('美股榜单：'+e.message);}).finally(()=>{boardBusy=false;paint();});
+  }
   if(!outBusy&&now-lastOutAt>180000){
     outBusy=true;lastOutAt=now;const r=round;
     getEMQuotes(OUT_DEFS.map(o=>o.code)).then(items=>items.forEach(item=>acceptQuote(item,r)))
@@ -1008,4 +996,364 @@ function fitCanvas(){
 const maxOf=a=>{let m=-Infinity;for(let i=0;i<a.length;i++)if(a[i]>m)m=a[i];return m;};
 const minOf=a=>{let m=Infinity;for(let i=0;i<a.length;i++)if(a[i]<m)m=a[i];return m;};
 function drawChart(){
-  if(!detailOpen
+  if(!detailOpen||!ctx)return;
+  const r=fitCanvas(),W=r.width,H=r.height;
+  ctx.clearRect(0,0,W,H);
+  const q=quotes[selected];
+  if(!q||W<60||H<60)return;
+  if(chartMode==='min')drawMin(q,W,H);else drawK(q,W,H);
+  const points=chartMode==='min'?q.minute:q.daily.slice(-Math.min(q.daily.length,W<650?90:140));
+  const el=$('chartHover');
+  if(hoverChart>=0&&points.length){
+    const idx=Math.min(points.length-1,Math.max(0,Math.round(hoverChart*(points.length-1)))),p=points[idx];
+    const x=6+(W-64)*(chartMode==='min'?idx/Math.max(1,points.length-1):(idx+.5)/points.length);
+    ctx.save();ctx.strokeStyle=cv('--mu');ctx.setLineDash([3,4]);ctx.beginPath();ctx.moveTo(x,15);ctx.lineTo(x,H-23);ctx.stroke();ctx.restore();
+    el.textContent=chartMode==='min'?p.t+' · 价格 '+f2(p.p)+(num(p.av)>0?' · 均价 '+f2(p.av):''):
+      p.d+' · 开 '+f2(p.o)+'  高 '+f2(p.h)+'  低 '+f2(p.l)+'  收 '+f2(p.c);
+  }else el.textContent='移动鼠标查看价格 · 图表为接口真实记录';
+}
+function emptyText(W,H,msg){
+  ctx.fillStyle=cv('--mu');ctx.font='12px sans-serif';
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(msg,W/2,H/2);
+  ctx.textAlign='left';ctx.textBaseline='alphabetic';
+}
+function drawMin(q,W,H){
+  const pts=q.minute||[], prev=num(q.trendPrev)||num(q.prevClose);
+  if(!pts.length||!prev){emptyText(W,H,q.trendState==='error'?'分时未取到，请刷新重试':q.trendState==='loading'?'分时数据加载中…':'暂无分时数据');return;}
+  const padL=6,padR=58,padT=16,padB=20, cw=W-padL-padR, ch=H-padT-padB;
+  let dev=.002;pts.forEach(x=>{dev=Math.max(dev,Math.abs(x.p-prev)/prev);});
+  pts.forEach(p=>{if(num(p.av)>0)dev=Math.max(dev,Math.abs(p.av-prev)/prev);});
+  dev*=1.03; // 不截断创业板/科创板超过12%的真实波动
+  const hi=prev*(1+dev), lo=prev*(1-dev), rng=(hi-lo)||1;
+  const y=v=>padT+(hi-v)/rng*ch, x=i=>padL+i/Math.max(1,pts.length-1)*cw;
+  ctx.strokeStyle=cv('--grid');ctx.lineWidth=1;ctx.font='10px sans-serif';ctx.fillStyle=cv('--mu');
+  for(let i=0;i<=4;i++){
+    const yy=padT+ch*i/4;
+    ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(W-padR,yy);ctx.stroke();
+    ctx.fillText((hi-rng*i/4).toFixed(2),W-padR+4,yy+3);
+  }
+  ctx.setLineDash([4,3]);ctx.strokeStyle='#6e7681';
+  ctx.beginPath();ctx.moveTo(padL,y(prev));ctx.lineTo(W-padR,y(prev));ctx.stroke();
+  ctx.setLineDash([]);
+  if(pts.some(p=>num(p.av)>0)){
+    ctx.strokeStyle='#e6b800';ctx.lineWidth=1;ctx.beginPath();let st=false;
+    pts.forEach((p,i)=>{if(!(num(p.av)>0))return;
+      st?ctx.lineTo(x(i),y(p.av)):ctx.moveTo(x(i),y(p.av));st=true;});
+    ctx.stroke();
+  }
+  const up=(num(q.price)!=null?q.price:prev)>=prev, col=up?cv('--up'):cv('--dn');
+  ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(x(i),y(p.p)):ctx.moveTo(x(i),y(p.p)));
+  ctx.strokeStyle=col;ctx.lineWidth=1.6;ctx.stroke();
+  ctx.lineTo(x(pts.length-1),padT+ch);ctx.lineTo(x(0),padT+ch);ctx.closePath();
+  ctx.fillStyle=up?'rgba(245,69,92,.12)':'rgba(34,197,94,.12)';ctx.fill();
+  const lp=pts[pts.length-1].p;
+  if(isFinite(lp)){
+    ctx.fillStyle=col;ctx.fillRect(W-padR,y(lp)-8,padR,16);
+    ctx.fillStyle='#fff';ctx.fillText(lp.toFixed(2),W-padR+4,y(lp)+4);
+  }
+  ctx.fillStyle=cv('--mu');
+  [0,.25,.5,.75,1].map(k=>pts[Math.round((pts.length-1)*k)].t).forEach((t,i)=>{
+    const tx=Math.min(padL+cw*i/4,W-padR-50);
+    ctx.fillText(t,tx,H-6);
+  });
+  if(pts.some(p=>num(p.av)>0)){ctx.fillStyle='#e6b800';ctx.fillText('— 均价',padL+2,9);}
+  ctx.fillStyle=col;ctx.fillText('— 价格',padL+54,9);
+}
+function drawK(q,W,H){
+  const bars=q.daily||[];
+  if(!bars.length){emptyText(W,H,q.klineState==='error'?'日K未取到，请刷新重试':q.klineState==='loading'?'日K数据加载中…':'暂无日K数据');return;}
+  const padL=6,padR=58,padT=16,padB=26;
+  const cw=W-padL-padR, allH=H-padT-padB, ph=allH*.72, vh=allH*.28;
+  const show=Math.min(bars.length,W<650?90:140), data=bars.slice(-show);
+  const hi=maxOf(data.map(b=>b.h)), lo=minOf(data.map(b=>b.l)), rng=(hi-lo)||1;
+  const y=v=>padT+(hi-v)/rng*ph, bw=Math.max(1,cw/show*.68);
+  const bx=i=>padL+cw*(i+.5)/show, mv=maxOf(data.map(b=>b.v))||1;
+  ctx.strokeStyle=cv('--grid');ctx.font='10px sans-serif';ctx.fillStyle=cv('--mu');
+  for(let i=0;i<=4;i++){
+    const yy=padT+ph*i/4;
+    ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(W-padR,yy);ctx.stroke();
+    ctx.fillText((hi-rng*i/4).toFixed(2),W-padR+4,yy+3);
+  }
+  data.forEach((b,i)=>{
+    const red=b.c>=b.o;
+    ctx.fillStyle=red?'rgba(245,69,92,.6)':'rgba(34,197,94,.6)';
+    ctx.fillRect(bx(i)-bw/2,padT+ph+vh-b.v/mv*vh,bw,b.v/mv*vh);
+    const col=red?cv('--up'):cv('--dn');
+    ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(bx(i),y(b.h));ctx.lineTo(bx(i),y(b.l));ctx.stroke();
+    ctx.fillRect(bx(i)-bw/2,y(Math.max(b.o,b.c)),bw,Math.max(1,Math.abs(y(b.o)-y(b.c))));
+  });
+  const off=bars.length-show;
+  [[5,'#e6b800'],[10,'#3b82f6'],[20,'#a78bfa']].forEach(([n,col])=>{
+    if(bars.length<n)return;
+    let s=0;const arr=[];
+    for(let i=0;i<bars.length;i++){s+=bars[i].c;if(i>=n)s-=bars[i-n].c;if(i>=n-1)arr.push(s/n);}
+    ctx.strokeStyle=col;ctx.lineWidth=1;ctx.beginPath();let st=false;
+    arr.forEach((v,i)=>{const z=i+(n-1)-off;if(z<0||z>=show)return;
+      st?ctx.lineTo(bx(z),y(v)):ctx.moveTo(bx(z),y(v));st=true;});
+    ctx.stroke();
+    ctx.fillStyle=col;ctx.fillText('MA'+n,padL+(n===5?2:n===10?48:94),9);
+  });
+  ctx.fillStyle=cv('--mu');
+  [0,Math.round(show*.5),show-1].forEach(i=>{
+    if(!data[i])return;
+    const tx=Math.min(Math.max(bx(i)-26,padL),W-padR-52);
+    ctx.fillText(String(data[i].d||'').slice(5),tx,H-6);
+  });
+}
+function paintReview(){
+  const arr=watchedStocks()
+    .map(s=>({s,q:quotes[s.code]})).filter(x=>num(x.q.price)!=null);
+  const byPct=arr.slice().sort((a,b)=>(pct(b.q)||0)-(pct(a.q)||0));
+  const byAmt=arr.filter(x=>!isExt(x.s.code)).sort((a,b)=>(b.q.amt||0)-(a.q.amt||0));
+  const byFund=arr.filter(x=>num(x.q.inflow)!=null).sort((a,b)=>(b.q.inflow||0)-(a.q.inflow||0));
+  const heat=SECTORS.map(sec=>{
+    const l=arr.filter(x=>x.s.sector===sec);
+    return l.length?{sec,n:l.length,avg:l.reduce((a,x)=>a+(pct(x.q)||0),0)/l.length}:null;
+  }).filter(Boolean).sort((a,b)=>b.avg-a.avg);
+  const hmax=heat.length?Math.max(.1,maxOf(heat.map(h=>Math.abs(h.avg)))):1;
+  const rows=(list,fn)=>list.slice(0,8).map((x,i)=>
+    '<div class="row" data-code="'+esc(x.s.code)+'"><span class="nu">'+(i+1)+'</span>'+
+    '<span class="nmx">'+esc(x.s.name)+' <span style="color:var(--mu)">'+x.s.code+'</span></span>'+
+    '<span class="v '+((pct(x.q)||0)>=0?'up':'dn')+'">'+fn(x)+'</span></div>').join('');
+  $('reviewView').innerHTML=
+  '<div class="review-title"><h2>市场复盘</h2><span>基于当前自选及最近行情 · 非全市场排名</span></div><div class="grid">'+
+    '<div class="card"><h4>涨幅榜 TOP8</h4>'+(byPct.length?rows(byPct,x=>fPct(pct(x.q))):'<div class="empty">暂无数据</div>')+'</div>'+
+    '<div class="card"><h4>A股成交额榜 TOP8</h4>'+(byAmt.length?rows(byAmt,x=>fAmt(x.q.amt)):'<div class="empty">暂无数据</div>')+'</div>'+
+    '<div class="card"><h4>主力净流入榜 TOP8</h4>'+(byFund.length?rows(byFund,x=>fAmt(x.q.inflow)):'<div class="empty">当前来源未提供资金字段<br>可在设置中改为东财优先</div>')+'</div>'+
+  '</div>'+
+  '<div class="grid">'+
+    '<div class="card"><h4>板块热度 <span class="mu">自选池平均涨跌幅</span></h4>'+
+      (heat.length?heat.map(h=>'<div style="padding:5px 0"><div style="display:flex;justify-content:space-between;font-size:12px">'+
+        '<span>'+esc(h.sec)+' <span style="color:var(--mu)">('+h.n+'只)</span></span>'+
+        '<span class="'+(h.avg>=0?'up':'dn')+'">'+fPct(h.avg)+'</span></div>'+
+        '<div class="bar"><i style="width:'+(Math.abs(h.avg)/hmax*100)+'%;background:'+
+        (h.avg>=0?'var(--up)':'var(--dn)')+'"></i></div></div>').join(''):
+        '<div class="empty">暂无数据</div>')+'</div>'+
+    '<div class="card"><h4>🇺🇸 美股每日活跃 TOP20 <span class="mu">按成交额 · '+(board.length?(boardError?'更新失败 · 保留上次':'获取于 '+quoteTime(boardFetchedAt)):'等待数据')+'</span></h4>'+
+      (board.length?board.map((x,i)=>'<div class="row" data-code="'+esc(x.code)+'" data-name="'+esc(x.name)+'">'+
+        '<span class="nu">'+(i+1)+'</span><span class="nmx">'+esc(x.name)+
+        ' <span style="color:var(--mu)">'+esc(showCode(x.code))+'</span></span>'+
+        '<span class="v '+((x.chg||0)>=0?'up':'dn')+'">'+(x.price!=null?x.price.toFixed(2):'--')+
+        '　'+fPct(x.chg)+'　'+fAmt(x.amt)+'</span></div>').join(''):
+        '<div class="empty">美股榜单暂不可用<br><span style="font-size:11px">'+esc(boardError||'正在请求东方财富独立榜单接口')+'<br>不影响A股双源行情，不以科技股名单冒充全市场TOP20。</span></div>')+'</div>'+
+  '</div>'+
+  '<div class="card" style="margin-bottom:10px"><h4>雷达信号记录 <span class="mu">共 '+events.length+' 条</span></h4>'+
+    (events.length?events.slice(0,40).map(e=>'<div class="row" data-code="'+esc(e.code)+'">'+
+      '<span class="nu">'+ICON[e.type]+'</span><span class="nmx">'+esc(e.name)+' · '+esc(e.title)+
+      ' <span style="color:var(--mu)">'+esc(e.text)+'</span></span>'+
+      '<span class="v">'+e.t+'</span></div>').join(''):
+      '<div class="empty">雷达尚未触发信号（仅盘中且行情时间足够新时触发）</div>')+'</div>'+
+  '<div class="card"><h4>数据说明</h4><div class="hint">'+
+    '版本 v5.0 · 腾讯 / 东方财富双源基础行情，刷新频率 '+cfg.interval/1000+' 秒，非A股连续交易时段降为3分钟。'+
+    '价格和图表来自接口真实记录，不含模拟行情。最近有效值可能过时；来源、行情时间和未更新状态会单独标记。缺失的主力资金不视为0。'+
+    '美股榜单独立依赖东方财富，按成交额排序（美元），取纳斯达克 / 纽交所 / 美交所前 20 名，点击可加入自选并查看分时与日K。'+
+    '<br>仅供个人自用，行情可能延迟，不构成投资建议。</div></div>';
+}
+
+/* ============ 7. 自选增减 ============ */
+function addWatch(code){
+  if(watchlist.indexOf(code)>=0)return true;
+  if(isIdx(code)){toast('指数只可查看，不能加入自选');return false;}
+  if(!isExt(code)&&watchlist.filter(c=>!isExt(c)).length>=50){toast('自选A股已满 50 只');return false;}
+  ensureQuote(code);watchlist.push(code);lset(LS.w,watchlist);listSig='';paint();toast('已加入自选');return true;
+}
+function removeWatch(code){
+  watchlist=watchlist.filter(c=>c!==code);
+  batchPick.delete(code);lset(LS.w,watchlist);
+  if(selected===code&&!detailOpen)selected=watchlist[0]||STOCKS[0].code;
+  listSig='';paint();toast('已移除');
+}
+function gotoTarget(code){ openDetail(code); }
+
+/* ============ 8. 交互 ============ */
+function setView(v){
+  view=v;
+  if(v==='review'&&detailOpen)closeDetail();
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===v));
+  $('monitorView').style.display=v==='monitor'?'block':'none';
+  $('reviewView').classList.toggle('show',v==='review');
+  if(v==='review')paintReview();
+}
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>setView(t.dataset.view));
+document.addEventListener('click',e=>{
+  if(e.target.closest('#dvBack')){closeDetail();return;}
+  const chip=e.target.closest('.chip');
+  if(chip){activeSector=chip.dataset.sec;listSig='';paintSecs();paintList();return;}
+  const sh=e.target.closest('.qhead .s');
+  if(sh){
+    const k=sh.dataset.sort;
+    if(sortKey===k)sortDir=-sortDir;else{sortKey=k;sortDir=(k==='code')?1:-1;}
+    listSig='';paintList();return;
+  }
+  const idx=e.target.closest('.idx');
+  if(idx){openDetail(idx.dataset.code);return;}
+  const row=e.target.closest('.qrow');
+  if(row){
+    const c=row.dataset.code;
+    if(manageMode){
+      const ck=row.querySelector('[data-pick]');
+      if(ck){if(e.target!==ck)ck.checked=!ck.checked;ck.checked?batchPick.add(c):batchPick.delete(c);}
+      listSig='';paintList();return;
+    }
+    openDetail(c);return;
+  }
+  const rv=e.target.closest('#reviewView .row');
+  if(rv){openDetail(rv.dataset.code,rv.dataset.name);return;}
+});
+document.querySelectorAll('.ctab').forEach(t=>t.onclick=()=>{
+  hoverChart=-1;document.querySelectorAll('.ctab').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');chartMode=t.dataset.mode;
+  if(chartMode==='kline'&&selected)loadKline(selected).then(paint);
+  if(chartMode==='min'&&selected)loadTrends(selected).then(paint);
+  paintDetail();
+});
+$('refBtn').onclick=manualRefresh;
+$('expBtn').onclick=()=>{
+  const L=[];
+  L.push('科技股雷达 · 盯盘复盘报告（v5.0）');
+  L.push('生成时间：'+new Date().toLocaleString('zh-CN'));
+  L.push('数据来源：公开行情接口（真实数据）');
+  L.push('');
+  L.push('一、指数');
+  INDEX_DEFS.concat(OUT_DEFS).forEach(i=>{
+    const q=quotes[i.code];
+    if(q&&num(q.price)!=null)L.push(i.name+'  '+f2(q.price)+'  '+fPct(pct(q)));
+  });
+  L.push('');L.push('二、自选股');
+  watchedStocks().forEach(s=>{
+    const q=quotes[s.code];
+    if(!q||num(q.price)==null)return;
+    L.push(s.name+'('+s.code+')  '+f2(q.price)+'  '+fPct(pct(q))+
+      '  量比'+(num(q.volRatio)!=null?q.volRatio.toFixed(2):'--')+
+      '  主力净占比'+(num(q.fundRatio)!=null?q.fundRatio.toFixed(2)+'%':'--')+
+      '  成交额'+fAmt(q.amt)+(notes[s.code]?'  备注:'+notes[s.code]:''));
+  });
+  L.push('');L.push('三、雷达信号（'+events.length+' 条）');
+  events.forEach((e,i)=>L.push((i+1)+'. '+e.t+' '+e.name+' '+e.title+' '+e.text));
+  L.push('');L.push('四、美股每日活跃 TOP20');
+  board.forEach((x,i)=>L.push((i+1)+'. '+x.name+'('+showCode(x.code)+')  '+
+    (x.price!=null?x.price.toFixed(2):'--')+'  '+fPct(x.chg)+'  成交额'+fAmt(x.amt)));
+  L.push('');L.push('数据来自公开行情接口，可能存在延迟，不构成投资建议。');
+  const b=new Blob([L.join('\n')],{type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(b);
+  a.download='科技股雷达复盘_'+new Date().toISOString().slice(0,10)+'.txt';
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},200);
+  toast('报告已导出');
+};
+$('mBtn').onclick=()=>{
+  manageMode=!manageMode;batchPick.clear();
+  $('mBar').hidden=!manageMode;$('mBtn').textContent=manageMode?'完成':'管理';
+  listSig='';paintList();
+};
+$('mDone').onclick=()=>{
+  manageMode=false;$('mBar').hidden=true;$('mBtn').textContent='管理';
+  listSig='';paintList();
+};
+$('pAll').onchange=e=>{
+  visible().forEach(s=>{e.target.checked?batchPick.add(s.code):batchPick.delete(s.code);});
+  listSig='';paintList();
+};
+$('bDel').onclick=()=>{
+  if(!batchPick.size)return;
+  const n=batchPick.size;
+  watchlist=watchlist.filter(c=>!batchPick.has(c));
+  batchPick.clear();lset(LS.w,watchlist);
+  if(watchlist.indexOf(selected)<0)selected=watchlist[0]||STOCKS[0].code;
+  listSig='';paint();toast('已移除 '+n+' 只');
+};
+const sIn=$('sInput'), sRes=$('sRes');
+sIn.oninput=()=>{
+  const kw=sIn.value.trim();
+  if(!kw){sRes.classList.remove('show');return;}
+  const hit=STOCKS.filter(s=>s.code.indexOf(kw)>=0||s.name.indexOf(kw)>=0||
+    (ALIAS[s.code]||[]).some(a=>a.indexOf(kw)>=0||kw.indexOf(a)>=0)).slice(0,10);
+  const alias=STOCKS.filter(s=>(ALIAS[s.code]||[]).some(a=>kw.indexOf(a)>=0));
+  sRes.innerHTML=(hit.length?hit.map(s=>{
+    const q=quotes[s.code],p=pct(q);
+    return '<div class="sr" data-add="'+esc(s.code)+'"><span>'+esc(s.name)+
+      (watchlist.indexOf(s.code)>=0?' <span class="mu">已自选</span>':'')+
+      '<div class="mu">'+s.code+' · '+s.sector+'</div></span>'+
+      '<span class="'+(p>=0?'up':'dn')+'">'+f2(q&&q.price)+
+      '<div class="mu">'+fPct(p)+'</div></span></div>';
+  }).join(''):'<div class="empty">未找到匹配标的</div>')+
+  (alias.length?'<div class="empty" style="text-align:left">提示：「'+esc(kw)+
+    '」按名称相近匹配；长鑫存储（CXMT）未在 A 股上市，工具不会编造它的代码和行情。</div>':'');
+  sRes.classList.add('show');
+};
+sRes.onclick=e=>{
+  const el=e.target.closest('[data-add]');if(!el)return;
+  const c=el.dataset.add;
+  sIn.value='';sRes.classList.remove('show');
+  if(watchlist.indexOf(c)>=0)openDetail(c);
+  else if(addWatch(c)){openDetail(c);loadTrends(c).then(paint);}
+};
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.sb2'))sRes.classList.remove('show');
+});
+function fillSet(){
+  $('ivSel').value=String(cfg.interval);$('preferSel').value=cfg.prefer;
+  $('soundChk').checked=cfg.sound;$('notifChk').checked=cfg.notif;
+  $('scopeSel').value=cfg.radar.scope;
+  $('thSpeed').value=cfg.radar.speedTh;$('thVol').value=cfg.radar.volTh;
+  $('thFund').value=cfg.radar.fundTh;$('thLimit').value=cfg.radar.limitDist;
+}
+function saveCfg(){lset(LS.c,cfg);}
+$('setBtn').onclick=()=>{fillSet();$('setMask').hidden=false;};
+$('setClose').onclick=()=>{$('setMask').hidden=true;};
+$('setMask').onclick=e=>{if(e.target===$('setMask'))$('setMask').hidden=true;};
+$('preferSel').onchange=()=>{cfg.prefer=$('preferSel').value;saveCfg();providerState.qq.retryAt=0;providerState.em.retryAt=0;lastSyncEnd=0;sync(true);toast('已更换优先来源，旧行情不会覆盖新行情');};
+$('ivSel').onchange=()=>{cfg.interval=+$('ivSel').value;saveCfg();scheduleNext();toast('刷新频率 '+cfg.interval/1000+' 秒');};
+$('soundChk').onchange=()=>{cfg.sound=$('soundChk').checked;saveCfg();if(cfg.sound)beep(true);};
+$('notifChk').onchange=()=>{
+  if($('notifChk').checked&&'Notification'in window){
+    Notification.requestPermission().then(p=>{
+      cfg.notif=(p==='granted');$('notifChk').checked=cfg.notif;saveCfg();
+      if(!cfg.notif)toast('浏览器未授权通知');
+    });
+  }else{cfg.notif=false;saveCfg();}
+};
+$('scopeSel').onchange=()=>{cfg.radar.scope=$('scopeSel').value;saveCfg();};
+$('thSpeed').onchange=()=>{const v=parseFloat($('thSpeed').value);
+  if(isFinite(v))cfg.radar.speedTh=Math.min(9,Math.max(.2,v));fillSet();saveCfg();};
+$('thVol').onchange=()=>{const v=parseFloat($('thVol').value);
+  if(isFinite(v))cfg.radar.volTh=Math.min(10,Math.max(1.1,v));fillSet();saveCfg();};
+$('thFund').onchange=()=>{const v=parseFloat($('thFund').value);
+  if(isFinite(v))cfg.radar.fundTh=Math.min(30,Math.max(1,v));fillSet();saveCfg();};
+$('thLimit').onchange=()=>{const v=parseFloat($('thLimit').value);
+  if(isFinite(v))cfg.radar.limitDist=Math.min(6,Math.max(.2,v));fillSet();saveCfg();};
+$('selfChk').onclick=selfCheck;
+$('healthCheck').onclick=()=>{fillSet();$('setMask').hidden=false;};
+$('restoreBtn').onclick=()=>{if(!confirm('恢复默认50只A股，并保留已添加的美股和备注？'))return;watchlist=[...STOCKS.map(s=>s.code),...watchlist.filter(c=>isExt(c))];lset(LS.w,watchlist);activeSector='全部';listSig='';paint();sync();toast('已恢复50只科技股');};
+$('clrBtn').onclick=()=>{
+  if(!confirm('清空本机保存的自选股、备注和设置？'))return;
+  try{localStorage.removeItem(LS.w);localStorage.removeItem(LS.c);localStorage.removeItem(LS.n);}catch(e){toast('浏览器禁止访问本地存储');return;}
+  location.reload();
+};
+let rzTimer=null;
+window.addEventListener('resize',()=>{clearTimeout(rzTimer);rzTimer=setTimeout(drawChart,150);});
+window.addEventListener('orientationchange',()=>setTimeout(drawChart,300));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastSyncEnd>(inSession()?cfg.interval:180000))sync();});
+window.addEventListener('online',()=>{sync();scheduleNext();});
+window.addEventListener('offline',()=>{setNet(false,'网络已断开 · 保留已有行情');});
+
+/* ============ 9. 启动 ============ */
+$('themeBtn').onclick=()=>{theme=theme==='dark'?'light':'dark';document.documentElement.dataset.theme=theme;lset('kj_theme',theme);$('themeBtn').textContent=theme==='dark'?'☀':'☾';drawChart();};
+$('themeBtn').textContent=theme==='dark'?'☀':'☾';
+$('chartRetry').onclick=async()=>{const b=$('chartRetry');b.disabled=true;try{await(chartMode==='min'?loadTrends(selected,true):loadKline(selected,true));}finally{b.disabled=false;paint();}};
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();hoverChart=Math.min(1,Math.max(0,(e.clientX-r.left-6)/(r.width-64)));drawChart();});
+canvas.addEventListener('mouseleave',()=>{hoverChart=-1;drawChart();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){$('setMask').hidden=true;closeDetail();}if((e.key==='Enter'||e.key===' ')&&e.target.matches('.tab,.chip')){e.preventDefault();e.target.click();}});
+watchlist.forEach(c=>ensureQuote(c));
+console.log('科技股雷达 v5.0 已加载');
+fillSet();
+render();
+scheduleNext();
+sync().finally(scheduleNext);
+// 请求不重叠；失败退避，不再启动后重复轰炸接口。
+</script>
+</body>
+</html>
